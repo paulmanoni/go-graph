@@ -1,4 +1,4 @@
-package pkg
+package graph
 
 import (
 	"fmt"
@@ -158,9 +158,9 @@ func (g *FieldGenerator[T]) getBaseGraphQLType(t reflect.Type, objectTypeName *s
 
 	case reflect.Struct:
 		if t == reflect.TypeOf(time.Time{}) {
-			return SpringDateTime
+			return DateTime
 		} else if t == reflect.TypeOf(JSONTime{}) {
-			return SpringDateTime
+			return DateTime
 		}
 		nameObject := ""
 		if g.objectTypeName != nil {

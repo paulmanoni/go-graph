@@ -1,13 +1,11 @@
-package pkg
+package graph
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
-	"trade_engine/models"
 
 	"github.com/graphql-go/graphql"
 	"github.com/mitchellh/mapstructure"
@@ -593,44 +591,6 @@ func (r *UnifiedResolver[T]) WithAuthResolver(resolver graphql.FieldResolveFn) *
 		return resolver(p)
 	}
 	return r
-}
-
-func (r *UnifiedResolver[T]) WithPermissionResolver(permissions []string, resolver graphql.FieldResolveFn) *UnifiedResolver[T] {
-	// Pre-compute permission set for O(1) lookup
-	permissionSet := make(map[string]struct{}, len(permissions))
-	for _, perm := range permissions {
-		permissionSet[perm] = struct{}{}
-	}
-
-	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-		user := r.getUser(p.Info.RootValue.(map[string]interface{}))
-		if user == nil {
-			return nil, errors.New("unauthorized")
-		}
-
-		// Check if user has any of the required permissions - O(n) where n = user authorities
-		hasPermission := false
-		for _, authority := range user.Authorities {
-			if _, exists := permissionSet[authority.Authority]; exists {
-				hasPermission = true
-				break
-			}
-		}
-
-		if !hasPermission {
-			return nil, errors.New("unauthorized")
-		}
-
-		return resolver(p)
-	}
-	return r
-}
-
-func (r *UnifiedResolver[T]) getUser(source map[string]interface{}) *models.MyDetails {
-	if source["details"] != nil {
-		return source["details"].(*models.MyDetails)
-	}
-	return nil
 }
 
 // Typed Resolver Support - allows direct struct parameters instead of graphql.ResolveParams
