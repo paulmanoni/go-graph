@@ -2,12 +2,9 @@ package graph
 
 import (
 	"github.com/graphql-go/graphql"
-	"go.uber.org/fx"
 )
 
 type SchemaBuilderParams struct {
-	fx.In
-
 	QueryFields    []QueryField    `group:"query_fields"`
 	MutationFields []MutationField `group:"mutation_fields"`
 }
@@ -53,14 +50,3 @@ func (sb *SchemaBuilder) Build() (graphql.Schema, error) {
 
 	return graphql.NewSchema(schemaConfig)
 }
-
-func ProvideSchema(sb *SchemaBuilder) (graphql.Schema, error) {
-	return sb.Build()
-}
-
-var GraphQLModule = fx.Options(
-	fx.Provide(
-		NewSchemaBuilder,
-		ProvideSchema,
-	),
-)

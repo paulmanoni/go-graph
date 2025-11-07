@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/graphql-go/graphql"
-	"go.uber.org/fx"
 )
 
 type QueryField interface {
@@ -18,22 +17,6 @@ type MutationField interface {
 	Serve() *graphql.Field
 
 	Name() string
-}
-
-func AsQuery(f any) any {
-	return fx.Annotate(
-		f,
-		fx.As(new(QueryField)),
-		fx.ResultTags(`group:"query_fields"`),
-	)
-}
-
-func AsMutation(f any) any {
-	return fx.Annotate(
-		f,
-		fx.As(new(MutationField)),
-		fx.ResultTags(`group:"mutation_fields"`),
-	)
 }
 
 // GetRootInfo safely extracts a value from p.Info.RootValue and unmarshals it into the target

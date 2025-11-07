@@ -29,7 +29,7 @@ func unserializeDateTime(value interface{}) interface{} {
 	return nil
 }
 
-var DateTime *graphql.Scalar = graphql.NewScalar(graphql.ScalarConfig{
+var DateTime = graphql.NewScalar(graphql.ScalarConfig{
 	Name:        "DateTime",
 	Description: "The `DateTime` scalar type formatted as yyyy-MM-dd'T'HH:mm",
 	Serialize:   serializeDateTime,
