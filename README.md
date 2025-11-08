@@ -31,7 +31,7 @@ package main
 import (
     "log"
     "net/http"
-    "github.com/paulmanoni/graph"
+    "github.com/paulmanoni/go-graph"
 )
 
 func main() {
@@ -65,7 +65,7 @@ package main
 import (
     "log"
     "net/http"
-    "github.com/paulmanoni/graph"
+    "github.com/paulmanoni/go-graph"
 )
 
 // Define your queries
@@ -307,7 +307,7 @@ err := graph.GetRootInfo(p, "details", &user)
 ```go
 import (
     "github.com/gin-gonic/gin"
-    "github.com/paulmanoni/graph"
+    "github.com/paulmanoni/go-graph"
 )
 
 func main() {
@@ -330,7 +330,7 @@ func main() {
 ```go
 import (
     "github.com/go-chi/chi/v5"
-    "github.com/paulmanoni/graph"
+    "github.com/paulmanoni/go-graph"
 )
 
 func main() {

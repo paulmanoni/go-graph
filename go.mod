@@ -1,4 +1,4 @@
-module github.com/paulmanoni/graph
+  module github.com/paulmanoni/go-graph
 
 go 1.25.1
 

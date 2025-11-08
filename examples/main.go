@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/paulmanoni/graph"
+	"github.com/paulmanoni/go-graph"
 )
 
 func main() {
