@@ -16,7 +16,7 @@ Built on top of [graphql-go](https://github.com/graphql-go/graphql).
 ## Installation
 
 ```bash
-go get github.com/paulmanoni/graph
+go get github.com/paulmanoni/go-graph
 ```
 
 ## Quick Start
