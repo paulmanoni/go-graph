@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/graphql-go/graphql"
@@ -66,13 +67,14 @@ func BenchmarkSchemaBuilder_Complex(b *testing.B) {
 				WithArgs(graphql.FieldConfigArgument{
 					"id": &graphql.ArgumentConfig{Type: graphql.Int},
 				}).
-				WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-					return User{ID: 1, Name: "Test User", Email: "test@example.com", Age: 30, IsActive: true}, nil
+				WithResolver(func(p graphql.ResolveParams) (*User, error) {
+					return &User{ID: 1, Name: "Test User", Email: "test@example.com", Age: 30, IsActive: true}, nil
 				}).BuildQuery(),
 			NewResolver[[]User]("users").
 				AsList().
-				WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-					return []User{{ID: 1, Name: "User 1"}}, nil
+				WithResolver(func(p graphql.ResolveParams) (*[]User, error) {
+					users := []User{{ID: 1, Name: "User 1"}}
+					return &users, nil
 				}).BuildQuery(),
 		},
 		MutationFields: []MutationField{
@@ -81,8 +83,8 @@ func BenchmarkSchemaBuilder_Complex(b *testing.B) {
 					"name":  &graphql.ArgumentConfig{Type: graphql.String},
 					"email": &graphql.ArgumentConfig{Type: graphql.String},
 				}).
-				WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-					return User{ID: 1, Name: "New User"}, nil
+				WithResolver(func(p graphql.ResolveParams) (*User, error) {
+					return &User{ID: 1, Name: "New User"}, nil
 				}).BuildMutation(),
 		},
 	}
@@ -147,7 +149,7 @@ func BenchmarkValidateGraphQLQuery_ComplexQuery(b *testing.B) {
 				WithArgs(graphql.FieldConfigArgument{
 					"id": &graphql.ArgumentConfig{Type: graphql.Int},
 				}).
-				WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+				WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 					return User{ID: 1, Name: "Test"}, nil
 				}).BuildQuery(),
 		},
@@ -416,7 +418,7 @@ func BenchmarkNewHTTP_CompleteStack(b *testing.B) {
 					WithArgs(graphql.FieldConfigArgument{
 						"id": &graphql.ArgumentConfig{Type: graphql.Int},
 					}).
-					WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+					WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 						return User{ID: 1, Name: "Test User", Email: "test@example.com"}, nil
 					}).BuildQuery(),
 			},
@@ -453,7 +455,7 @@ func BenchmarkNewResolver_Simple(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = NewResolver[User]("user").
-			WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+			WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 				return User{ID: 1, Name: "Test"}, nil
 			}).BuildQuery()
 	}
@@ -472,7 +474,7 @@ func BenchmarkNewResolver_WithArgs(b *testing.B) {
 				"id":   &graphql.ArgumentConfig{Type: graphql.Int},
 				"name": &graphql.ArgumentConfig{Type: graphql.String},
 			}).
-			WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+			WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 				return User{ID: 1, Name: "Test"}, nil
 			}).BuildQuery()
 	}
@@ -488,7 +490,7 @@ func BenchmarkNewResolver_AsList(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = NewResolver[[]User]("users").
 			AsList().
-			WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+			WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 				return []User{{ID: 1, Name: "Test"}}, nil
 			}).BuildQuery()
 	}
@@ -504,7 +506,7 @@ func BenchmarkNewResolver_AsPaginated(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = NewResolver[User]("users").
 			AsPaginated().
-			WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+			WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 				return PaginatedResponse[User]{
 					Items:      []User{{ID: 1, Name: "Test"}},
 					TotalCount: 1,
@@ -532,7 +534,7 @@ func BenchmarkNewResolver_WithInputObject(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = NewResolver[User]("createUser").
 			WithInputObject(CreateUserInput{}).
-			WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+			WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 				return User{ID: 1, Name: "Test"}, nil
 			}).BuildMutation()
 	}
@@ -699,7 +701,7 @@ func BenchmarkBuildSchemaFromContext_WithParams(b *testing.B) {
 		SchemaParams: &SchemaBuilderParams{
 			QueryFields: []QueryField{
 				NewResolver[User]("user").
-					WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+					WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 						return User{ID: 1, Name: "Test"}, nil
 					}).BuildQuery(),
 			},
@@ -833,5 +835,274 @@ func BenchmarkNewHTTP_WithCustomRootObject(b *testing.B) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
+	}
+}
+
+// Benchmark NewArgsResolver with struct arguments
+func BenchmarkNewArgsResolver_StructArgs(b *testing.B) {
+	type GetUserArgs struct {
+		ID   int    `json:"id" graphql:"id,required"`
+		Name string `json:"name"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resolver := NewArgsResolver[User, GetUserArgs]("user").
+			WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+				return &User{ID: args.ID, Name: args.Name}, nil
+			})
+		_ = resolver.BuildQuery()
+	}
+}
+
+// Benchmark NewArgsResolver with primitive arguments
+func BenchmarkNewArgsResolver_PrimitiveArgs(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resolver := NewArgsResolver[string, string]("echo", "message").
+			WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+				return &args, nil
+			})
+		_ = resolver.BuildMutation()
+	}
+}
+
+// Benchmark NewArgsResolver resolver execution with struct args
+func BenchmarkNewArgsResolver_ExecuteStructArgs(b *testing.B) {
+	type GetUserArgs struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			return &User{ID: args.ID, Name: args.Name}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+	params := graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"id":   1,
+			"name": "John",
+		},
+		Context: context.Background(),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = field.Resolve(params)
+	}
+}
+
+// Benchmark NewArgsResolver resolver execution with primitive args
+func BenchmarkNewArgsResolver_ExecutePrimitiveArgs(b *testing.B) {
+	resolver := NewArgsResolver[string, string]("echo", "message").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+			return &args, nil
+		})
+
+	field := resolver.BuildMutation().Serve()
+	params := graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"message": "Hello World",
+		},
+		Context: context.Background(),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = field.Resolve(params)
+	}
+}
+
+// Benchmark NewArgsResolver with nested struct arguments
+func BenchmarkNewArgsResolver_NestedStructArgs(b *testing.B) {
+	type MessageArgs struct {
+		Input struct {
+			Message string `json:"message"`
+			Name    string `json:"name"`
+		} `json:"input"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resolver := NewArgsResolver[string, MessageArgs]("sendMessage").
+			WithResolver(func(ctx context.Context, p graphql.ResolveParams, args MessageArgs) (*string, error) {
+				result := args.Input.Name + ": " + args.Input.Message
+				return &result, nil
+			})
+		_ = resolver.BuildMutation()
+	}
+}
+
+// Benchmark NewArgsResolver nested struct execution
+func BenchmarkNewArgsResolver_ExecuteNestedStructArgs(b *testing.B) {
+	type MessageArgs struct {
+		Input struct {
+			Message string `json:"message"`
+			Name    string `json:"name"`
+		} `json:"input"`
+	}
+
+	resolver := NewArgsResolver[string, MessageArgs]("sendMessage").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args MessageArgs) (*string, error) {
+			result := args.Input.Name + ": " + args.Input.Message
+			return &result, nil
+		})
+
+	field := resolver.BuildMutation().Serve()
+	params := graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"input": map[string]interface{}{
+				"message": "Hello",
+				"name":    "John",
+			},
+		},
+		Context: context.Background(),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = field.Resolve(params)
+	}
+}
+
+// Benchmark NewArgsResolver with context access
+func BenchmarkNewArgsResolver_WithContext(b *testing.B) {
+	type GetUserArgs struct {
+		ID int `json:"id"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			name := "Default"
+			if val := ctx.Value("test_key"); val != nil {
+				name = val.(string)
+			}
+			return &User{ID: args.ID, Name: name}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+	ctx := context.WithValue(context.Background(), "test_key", "Context User")
+	params := graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"id": 1,
+		},
+		Context: ctx,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = field.Resolve(params)
+	}
+}
+
+// Benchmark NewArgsResolver as list
+func BenchmarkNewArgsResolver_AsList(b *testing.B) {
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	type ListUsersArgs struct {
+		Limit int `json:"limit"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resolver := NewArgsResolver[[]User, ListUsersArgs]("users").
+			AsList().
+			WithResolver(func(ctx context.Context, p graphql.ResolveParams, args ListUsersArgs) (*[]User, error) {
+				users := make([]User, args.Limit)
+				for j := 0; j < args.Limit; j++ {
+					users[j] = User{ID: j + 1, Name: "User"}
+				}
+				return &users, nil
+			})
+		_ = resolver.BuildQuery()
+	}
+}
+
+// Benchmark argument type generation from struct
+func BenchmarkGenerateArgsFromType(b *testing.B) {
+	type ComplexArgs struct {
+		ID       int      `json:"id" graphql:"id,required"`
+		Name     string   `json:"name"`
+		Email    string   `json:"email"`
+		Age      int      `json:"age"`
+		Active   bool     `json:"active"`
+		Tags     []string `json:"tags"`
+		Metadata struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"metadata"`
+	}
+
+	t := reflect.TypeOf(ComplexArgs{})
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = generateArgsFromType(t)
+	}
+}
+
+// Benchmark mapArgsToStruct
+func BenchmarkMapArgsToStruct(b *testing.B) {
+	type UserArgs struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Age   int    `json:"age"`
+	}
+
+	args := map[string]interface{}{
+		"id":    1,
+		"name":  "John",
+		"email": "john@example.com",
+		"age":   30,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var userArgs UserArgs
+		_ = mapArgsToStruct(args, &userArgs)
+	}
+}
+
+// Benchmark mapArgsToStruct with nested structs
+func BenchmarkMapArgsToStruct_Nested(b *testing.B) {
+	type MessageArgs struct {
+		Input struct {
+			Message string `json:"message"`
+			Name    string `json:"name"`
+		} `json:"input"`
+	}
+
+	args := map[string]interface{}{
+		"input": map[string]interface{}{
+			"message": "Hello",
+			"name":    "John",
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var messageArgs MessageArgs
+		_ = mapArgsToStruct(args, &messageArgs)
 	}
 }

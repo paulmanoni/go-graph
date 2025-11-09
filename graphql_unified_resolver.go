@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -356,6 +357,66 @@ func GetTypeName[T any]() string {
 	return fullName
 }
 
+// getInputTypeName generates a clean GraphQL input type name from a reflect.Type
+// Handles anonymous structs by generating meaningful names based on field context
+func getInputTypeName(t reflect.Type, fieldName string) string {
+	if t == nil {
+		return "Input"
+	}
+
+	// Handle pointer types
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	// Get the type name
+	typeName := t.Name()
+
+	// If it's an anonymous struct (no name), generate one from field name
+	if typeName == "" && t.Kind() == reflect.Struct {
+		if fieldName != "" {
+			// Capitalize first letter of field name
+			runes := []rune(fieldName)
+			if len(runes) > 0 {
+				runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
+				typeName = string(runes)
+
+				// Append "Input" suffix if not already present
+				if !strings.HasSuffix(typeName, "Input") {
+					typeName = typeName + "Input"
+				}
+			} else {
+				typeName = "AnonymousInput"
+			}
+		} else {
+			typeName = "AnonymousInput"
+		}
+	}
+
+	fullName := typeName
+
+	// If still empty, use the string representation
+	if fullName == "" {
+		fullName = t.String()
+	}
+
+	// Remove package paths
+	if idx := strings.LastIndex(fullName, "."); idx >= 0 {
+		fullName = fullName[idx+1:]
+	}
+
+	// Clean up the name
+	fullName = strings.ReplaceAll(fullName, "[]", "")
+	fullName = strings.ReplaceAll(fullName, "*", "")
+	fullName = strings.ReplaceAll(fullName, "[", "_")
+	fullName = strings.ReplaceAll(fullName, "]", "")
+	fullName = strings.ReplaceAll(fullName, " ", "_")
+	fullName = strings.ReplaceAll(fullName, "{", "")
+	fullName = strings.ReplaceAll(fullName, "}", "")
+
+	return fullName
+}
+
 func NewResolver[T any](name string) *UnifiedResolver[T] {
 	resolver := &UnifiedResolver[T]{
 		name:            name,
@@ -469,12 +530,22 @@ func (r *UnifiedResolver[T]) WithArgsFromStruct(structType interface{}) *Unified
 
 // generateArgsFromType creates GraphQL arguments from a struct type
 func generateArgsFromType(t reflect.Type) graphql.FieldConfigArgument {
+	return generateArgsFromTypeWithContext(t, "")
+}
+
+// generateArgsFromTypeWithContext creates GraphQL arguments from a struct type with parent context
+func generateArgsFromTypeWithContext(t reflect.Type, parentTypeName string) graphql.FieldConfigArgument {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 
 	if t.Kind() != reflect.Struct {
 		return graphql.FieldConfigArgument{}
+	}
+
+	// Use parent type name if provided, otherwise use the struct's own name
+	if parentTypeName == "" {
+		parentTypeName = t.Name()
 	}
 
 	args := graphql.FieldConfigArgument{}
@@ -492,7 +563,7 @@ func generateArgsFromType(t reflect.Type) graphql.FieldConfigArgument {
 			continue
 		}
 
-		graphqlType := gen.getInputType(field.Type, field)
+		graphqlType := gen.getInputTypeWithContext(field.Type, field, parentTypeName)
 		if graphqlType == nil {
 			continue
 		}
@@ -581,15 +652,218 @@ func createPageInfoType() *graphql.Object {
 	return pageInfoType
 }
 
-func (r *UnifiedResolver[T]) WithResolver(resolver graphql.FieldResolveFn) *UnifiedResolver[T] {
+func (r *UnifiedResolver[T]) WithRawResolver(resolver graphql.FieldResolveFn) *UnifiedResolver[T] {
 	r.resolver = resolver
 	return r
 }
 
-func (r *UnifiedResolver[T]) WithAuthResolver(resolver graphql.FieldResolveFn) *UnifiedResolver[T] {
+// WithResolver sets a type-safe resolver function that returns *T instead of interface{}
+// This provides better type safety and eliminates the need for type assertions or casts
+//
+// Example usage:
+//
+//	NewResolver[User]("user").
+//		WithResolver(func(p graphql.ResolveParams) (*User, error) {
+//			id, _ := GetArgInt(p, "id")
+//			return userService.GetByID(id)
+//		}).BuildQuery()
+//
+//	NewResolver[User]("users").
+//		AsList().
+//		WithResolver(func(p graphql.ResolveParams) (*[]User, error) {
+//			users := userService.List()
+//			return &users, nil
+//		}).BuildQuery()
+//
+//	NewResolver[string]("hello").
+//		WithResolver(func(p graphql.ResolveParams) (*string, error) {
+//			msg := "Hello, World!"
+//			return &msg, nil
+//		}).BuildQuery()
+func (r *UnifiedResolver[T]) WithResolver(resolver func(p graphql.ResolveParams) (*T, error)) *UnifiedResolver[T] {
 	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
 		return resolver(p)
 	}
+	return r
+}
+
+func (r *UnifiedResolver[T]) WithAuthResolver(resolver func(p graphql.ResolveParams) (*T, error)) *UnifiedResolver[T] {
+	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
+		return resolver(p)
+	}
+	return r
+}
+
+// TypedArgsResolver provides type-safe argument handling
+type TypedArgsResolver[T any, A any] struct {
+	base     *UnifiedResolver[T]
+	argName  []string
+	argType  reflect.Type
+	isScalar bool
+}
+
+// NewTypedResolver creates a resolver with type-safe arguments
+// This allows you to specify both the return type and argument type
+//
+// For struct arguments (auto-generates fields from struct):
+//
+//	type GetUserArgs struct {
+//		ID int `graphql:"id,required"`
+//	}
+//
+//	NewTypedResolver[User, GetUserArgs]("user").
+//		WithResolver(func(ctx context.Context, args GetUserArgs) (*User, error) {
+//			return userService.GetByID(args.ID)
+//		}).BuildQuery()
+//
+// For primitive arguments (requires argName parameter):
+//
+//	NewTypedResolver[string, string]("echo", "message").
+//		WithResolver(func(ctx context.Context, message string) (*string, error) {
+//			return &message, nil
+//		}).BuildMutation()
+//
+//	NewTypedResolver[User, int]("user", "id").
+//		WithResolver(func(ctx context.Context, id int) (*User, error) {
+//			return userService.GetByID(id)
+//		}).BuildQuery()
+
+func NewArgsResolver[T any, A any](name string, argName ...string) *TypedArgsResolver[T, A] {
+	base := NewResolver[T](name)
+
+	// Get the type of A
+	var argsInstance A
+	argsType := reflect.TypeOf(argsInstance)
+
+	// Check if A is a struct or a primitive type
+	if argsType != nil && argsType.Kind() == reflect.Struct {
+		// Struct type - auto-generate args from struct fields
+		// Pass the parent type name for anonymous struct naming
+		parentTypeName := argsType.Name()
+		base.args = generateArgsFromTypeWithContext(argsType, parentTypeName)
+	} else {
+		// Primitive type (string, int, bool, etc.) - create single argument
+		fieldName := "input"
+		if len(argName) > 0 && argName[0] != "" {
+			fieldName = argName[0]
+		}
+
+		// Get the GraphQL type for the primitive
+		graphqlType := getPrimitiveGraphQLType(argsType)
+		if graphqlType != nil {
+			base.args = graphql.FieldConfigArgument{
+				fieldName: &graphql.ArgumentConfig{
+					Type: graphqlType,
+				},
+			}
+		}
+	}
+
+	return &TypedArgsResolver[T, A]{
+		base:     base,
+		argName:  argName,
+		argType:  argsType,
+		isScalar: argsType != nil && argsType.Kind() != reflect.Struct,
+	}
+}
+
+// getPrimitiveGraphQLType returns the GraphQL type for Go primitive types
+func getPrimitiveGraphQLType(t reflect.Type) graphql.Input {
+	if t == nil {
+		return nil
+	}
+
+	switch t.Kind() {
+	case reflect.String:
+		return graphql.String
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return graphql.Int
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return graphql.Int
+	case reflect.Float32, reflect.Float64:
+		return graphql.Float
+	case reflect.Bool:
+		return graphql.Boolean
+	default:
+		return nil
+	}
+}
+
+// WithResolver sets a type-safe resolver with typed arguments and context support
+//
+// Example usage:
+//
+//	type GetPostArgs struct {
+//		ID int `graphql:"id,required"`
+//	}
+//
+//	resolver.WithArgs[GetPostArgs]().
+//		WithResolver(func(ctx context.Context, args GetPostArgs) (*Post, error) {
+//			return postService.GetByID(args.ID)
+//		})
+func (r *TypedArgsResolver[T, A]) WithResolver(resolver func(ctx context.Context, p graphql.ResolveParams, args A) (*T, error)) *TypedArgsResolver[T, A] {
+	r.base.resolver = func(p graphql.ResolveParams) (interface{}, error) {
+		// Extract context from ResolveParams
+		ctx := p.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+
+		var args A
+
+		// Check if A is a scalar type (primitive)
+		if r.isScalar {
+			// For primitives, extract the single argument value directly
+			fieldName := "input"
+			if len(r.argName) > 0 && r.argName[0] != "" {
+				fieldName = r.argName[0]
+			}
+
+			if argValue, exists := p.Args[fieldName]; exists {
+				// Convert to type A
+				argsValue := reflect.ValueOf(&args).Elem()
+				if err := setFieldValue(argsValue, argValue); err != nil {
+					return nil, fmt.Errorf("failed to parse argument %s: %w", fieldName, err)
+				}
+			}
+		} else {
+			// For structs, map all args to struct fields
+			if err := mapArgsToStruct(p.Args, &args); err != nil {
+				return nil, fmt.Errorf("failed to parse arguments: %w", err)
+			}
+		}
+
+		// Call the typed resolver
+		return resolver(ctx, p, args)
+	}
+	return r
+}
+
+// BuildQuery builds and returns a QueryField
+func (r *TypedArgsResolver[T, A]) BuildQuery() QueryField {
+	return r.base.BuildQuery()
+}
+
+// BuildMutation builds and returns a MutationField
+func (r *TypedArgsResolver[T, A]) BuildMutation() MutationField {
+	return r.base.BuildMutation()
+}
+
+// AsList configures the resolver to return a list of items
+func (r *TypedArgsResolver[T, A]) AsList() *TypedArgsResolver[T, A] {
+	r.base.AsList()
+	return r
+}
+
+// AsPaginated configures the resolver to return paginated results
+func (r *TypedArgsResolver[T, A]) AsPaginated() *TypedArgsResolver[T, A] {
+	r.base.AsPaginated()
+	return r
+}
+
+// WithDescription sets the field description
+func (r *TypedArgsResolver[T, A]) WithDescription(desc string) *TypedArgsResolver[T, A] {
+	r.base.WithDescription(desc)
 	return r
 }
 
@@ -1249,6 +1523,11 @@ func setFieldValue(fieldValue reflect.Value, argValue interface{}) error {
 		if argReflectValue.Kind() == reflect.Int {
 			fieldValue.SetFloat(float64(argReflectValue.Int()))
 			return nil
+		}
+	case reflect.Struct:
+		// Handle nested structs - convert map[string]interface{} to struct
+		if argMap, ok := argValue.(map[string]interface{}); ok {
+			return mapArgsToStruct(argMap, fieldValue.Addr().Interface())
 		}
 	case reflect.Slice:
 		if argReflectValue.Kind() == reflect.Slice {

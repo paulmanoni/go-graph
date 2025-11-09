@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -413,8 +414,8 @@ func TestSchemaBuilder_WithCustomTypes(t *testing.T) {
 				WithArgs(graphql.FieldConfigArgument{
 					"id": &graphql.ArgumentConfig{Type: graphql.Int},
 				}).
-				WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-					return User{ID: 1, Name: "Test"}, nil
+				WithResolver(func(p graphql.ResolveParams) (*User, error) {
+					return &User{ID: 1, Name: "Test"}, nil
 				}).BuildQuery(),
 		},
 	}
@@ -438,8 +439,8 @@ func TestNewResolver_Simple(t *testing.T) {
 	}
 
 	field := NewResolver[User]("user").
-		WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-			return User{ID: 1, Name: "Test"}, nil
+		WithResolver(func(p graphql.ResolveParams) (*User, error) {
+			return &User{ID: 1, Name: "Test"}, nil
 		}).BuildQuery()
 
 	if field.Name() != "user" {
@@ -466,8 +467,8 @@ func TestNewResolver_WithArgs(t *testing.T) {
 		WithArgs(graphql.FieldConfigArgument{
 			"id": &graphql.ArgumentConfig{Type: graphql.Int},
 		}).
-		WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-			return User{ID: 1, Name: "Test"}, nil
+		WithResolver(func(p graphql.ResolveParams) (*User, error) {
+			return &User{ID: 1, Name: "Test"}, nil
 		}).BuildQuery()
 
 	graphqlField := field.Serve()
@@ -488,7 +489,7 @@ func TestNewResolver_AsList(t *testing.T) {
 
 	field := NewResolver[[]User]("users").
 		AsList().
-		WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+		WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 			return []User{{ID: 1, Name: "Test"}}, nil
 		}).BuildQuery()
 
@@ -510,7 +511,7 @@ func TestNewResolver_AsPaginated(t *testing.T) {
 
 	field := NewResolver[User]("users").
 		AsPaginated().
-		WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+		WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 			return PaginatedResponse[User]{
 				Items:      []User{{ID: 1, Name: "Test"}},
 				TotalCount: 1,
@@ -969,7 +970,7 @@ func TestBuildSchemaFromContext_WithParams(t *testing.T) {
 		SchemaParams: &SchemaBuilderParams{
 			QueryFields: []QueryField{
 				NewResolver[User]("user").
-					WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
+					WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
 						return User{ID: 1, Name: "Test"}, nil
 					}).BuildQuery(),
 			},
@@ -1012,5 +1013,382 @@ func TestBuildSchemaFromContext_WithCustomSchema(t *testing.T) {
 
 	if schema.QueryType() == nil {
 		t.Error("Custom schema should have query type")
+	}
+}
+
+// Test Type-Safe Arguments with NewArgsResolver
+
+func TestNewArgsResolver_StructArgs(t *testing.T) {
+	type GetUserArgs struct {
+		ID   int    `json:"id" graphql:"id,required"`
+		Name string `json:"name"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	// Create resolver with struct arguments
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			return &User{ID: args.ID, Name: args.Name}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	// Test that arguments were generated
+	if field.Args == nil {
+		t.Error("Expected args to be generated from struct")
+	}
+
+	if _, hasID := field.Args["id"]; !hasID {
+		t.Error("Expected 'id' argument")
+	}
+
+	if _, hasName := field.Args["name"]; !hasName {
+		t.Error("Expected 'name' argument")
+	}
+
+	// Test resolver execution
+	result, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"id":   1,
+			"name": "John",
+		},
+		Context: context.Background(),
+	})
+
+	if err != nil {
+		t.Fatalf("Resolver error = %v", err)
+	}
+
+	user, ok := result.(*User)
+	if !ok {
+		t.Fatalf("Expected *User, got %T", result)
+	}
+
+	if user.ID != 1 || user.Name != "John" {
+		t.Errorf("Expected User{ID: 1, Name: John}, got %+v", user)
+	}
+}
+
+func TestNewArgsResolver_PrimitiveArgs_String(t *testing.T) {
+	// Create resolver with primitive string argument
+	resolver := NewArgsResolver[string, string]("echo", "message").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+			return &args, nil
+		})
+
+	field := resolver.BuildMutation().Serve()
+
+	// Test that argument was generated
+	if field.Args == nil {
+		t.Error("Expected args to be generated")
+	}
+
+	if _, hasMessage := field.Args["message"]; !hasMessage {
+		t.Error("Expected 'message' argument")
+	}
+
+	// Test resolver execution
+	result, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"message": "Hello World",
+		},
+		Context: context.Background(),
+	})
+
+	if err != nil {
+		t.Fatalf("Resolver error = %v", err)
+	}
+
+	msg, ok := result.(*string)
+	if !ok {
+		t.Fatalf("Expected *string, got %T", result)
+	}
+
+	if *msg != "Hello World" {
+		t.Errorf("Expected 'Hello World', got %s", *msg)
+	}
+}
+
+func TestNewArgsResolver_PrimitiveArgs_Int(t *testing.T) {
+	// Create resolver with primitive int argument
+	resolver := NewArgsResolver[int, int]("double", "number").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args int) (*int, error) {
+			result := args * 2
+			return &result, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	// Test that argument was generated
+	if field.Args == nil {
+		t.Error("Expected args to be generated")
+	}
+
+	if _, hasNumber := field.Args["number"]; !hasNumber {
+		t.Error("Expected 'number' argument")
+	}
+
+	// Test resolver execution
+	result, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"number": 5,
+		},
+		Context: context.Background(),
+	})
+
+	if err != nil {
+		t.Fatalf("Resolver error = %v", err)
+	}
+
+	num, ok := result.(*int)
+	if !ok {
+		t.Fatalf("Expected *int, got %T", result)
+	}
+
+	if *num != 10 {
+		t.Errorf("Expected 10, got %d", *num)
+	}
+}
+
+func TestNewArgsResolver_NestedStructArgs(t *testing.T) {
+	type MessageArgs struct {
+		Input struct {
+			Message string `json:"message"`
+			Name    string `json:"name"`
+		} `json:"input"`
+	}
+
+	// Create resolver with nested struct arguments
+	resolver := NewArgsResolver[string, MessageArgs]("sendMessage").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args MessageArgs) (*string, error) {
+			result := args.Input.Name + ": " + args.Input.Message
+			return &result, nil
+		})
+
+	field := resolver.BuildMutation().Serve()
+
+	// Test that argument was generated
+	if field.Args == nil {
+		t.Error("Expected args to be generated")
+	}
+
+	if _, hasInput := field.Args["input"]; !hasInput {
+		t.Error("Expected 'input' argument")
+	}
+
+	// Test resolver execution
+	result, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"input": map[string]interface{}{
+				"message": "Hello",
+				"name":    "John",
+			},
+		},
+		Context: context.Background(),
+	})
+
+	if err != nil {
+		t.Fatalf("Resolver error = %v", err)
+	}
+
+	msg, ok := result.(*string)
+	if !ok {
+		t.Fatalf("Expected *string, got %T", result)
+	}
+
+	expected := "John: Hello"
+	if *msg != expected {
+		t.Errorf("Expected '%s', got %s", expected, *msg)
+	}
+}
+
+func TestNewArgsResolver_WithContext(t *testing.T) {
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	type GetUserArgs struct {
+		ID int `json:"id"`
+	}
+
+	// Create resolver that uses context
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			// Check if context is available
+			if ctx == nil {
+				t.Error("Context should not be nil")
+			}
+
+			// Check if we can get values from context
+			if val := ctx.Value("test_key"); val != nil {
+				name := val.(string)
+				return &User{ID: args.ID, Name: name}, nil
+			}
+
+			return &User{ID: args.ID, Name: "Default"}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	// Test with context value
+	ctx := context.WithValue(context.Background(), "test_key", "Context User")
+	result, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"id": 1,
+		},
+		Context: ctx,
+	})
+
+	if err != nil {
+		t.Fatalf("Resolver error = %v", err)
+	}
+
+	user, ok := result.(*User)
+	if !ok {
+		t.Fatalf("Expected *User, got %T", result)
+	}
+
+	if user.Name != "Context User" {
+		t.Errorf("Expected 'Context User', got %s", user.Name)
+	}
+}
+
+func TestNewArgsResolver_AsList(t *testing.T) {
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	type ListUsersArgs struct {
+		Limit int `json:"limit"`
+	}
+
+	// Create resolver that returns a list
+	resolver := NewArgsResolver[[]User, ListUsersArgs]("users").
+		AsList().
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args ListUsersArgs) (*[]User, error) {
+			users := make([]User, args.Limit)
+			for i := 0; i < args.Limit; i++ {
+				users[i] = User{ID: i + 1, Name: "User"}
+			}
+			return &users, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	// Test resolver execution
+	result, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"limit": 3,
+		},
+		Context: context.Background(),
+	})
+
+	if err != nil {
+		t.Fatalf("Resolver error = %v", err)
+	}
+
+	users, ok := result.(*[]User)
+	if !ok {
+		t.Fatalf("Expected *[]User, got %T", result)
+	}
+
+	if len(*users) != 3 {
+		t.Errorf("Expected 3 users, got %d", len(*users))
+	}
+}
+
+func TestNewArgsResolver_WithDescription(t *testing.T) {
+	type GetUserArgs struct {
+		ID int `json:"id"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithDescription("Get a user by ID").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			return &User{ID: args.ID, Name: "Test"}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	if field.Description != "Get a user by ID" {
+		t.Errorf("Expected description 'Get a user by ID', got %s", field.Description)
+	}
+}
+
+func TestNewArgsResolver_ErrorHandling(t *testing.T) {
+	type GetUserArgs struct {
+		ID int `json:"id"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			if args.ID < 0 {
+				return nil, fmt.Errorf("ID must be positive")
+			}
+			return &User{ID: args.ID, Name: "Test"}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	// Test with invalid ID
+	_, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"id": -1,
+		},
+		Context: context.Background(),
+	})
+
+	if err == nil {
+		t.Error("Expected error for negative ID")
+	}
+}
+
+func TestNewArgsResolver_NilContext(t *testing.T) {
+	type GetUserArgs struct {
+		ID int `json:"id"`
+	}
+
+	type User struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	resolver := NewArgsResolver[User, GetUserArgs]("user").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+			// Context should default to Background if nil
+			if ctx == nil {
+				t.Error("Context should not be nil, should default to Background")
+			}
+			return &User{ID: args.ID, Name: "Test"}, nil
+		})
+
+	field := resolver.BuildQuery().Serve()
+
+	// Test with nil context - should use Background
+	_, err := field.Resolve(graphql.ResolveParams{
+		Args: map[string]interface{}{
+			"id": 1,
+		},
+		Context: nil,
+	})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }

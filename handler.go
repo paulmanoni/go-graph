@@ -43,27 +43,40 @@ func ExtractBearerToken(r *http.Request) string {
 // getDefaultHelloQuery creates a default hello world query
 func getDefaultHelloQuery() QueryField {
 	return NewResolver[string]("hello").
-		WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-			return "Hello, World!", nil
+		WithResolver(func(p graphql.ResolveParams) (*string, error) {
+			name := "Hello world"
+			return &name, nil
 		}).BuildQuery()
 }
 
 // getDefaultEchoMutation creates a default echo mutation
 func getDefaultEchoMutation() MutationField {
-	return NewResolver[string]("echo").
-		WithArgs(graphql.FieldConfigArgument{
-			"message": &graphql.ArgumentConfig{
-				Type: graphql.String,
-			},
+	return NewArgsResolver[string, string]("echo", "message").
+		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+			return &args, nil
 		}).
-		WithResolver(func(p graphql.ResolveParams) (interface{}, error) {
-			message, err := GetArgString(p, "message")
-			if err != nil {
-				return "No message provided", nil
+		BuildMutation()
+}
+
+// Example: Type-safe args version of echo mutation (alternative implementation)
+// This shows the new NewTypedResolver[T, A]() API for type-safe argument handling
+// Uncomment to use:
+/*
+func getDefaultEchoMutationTypeSafe() MutationField {
+	type EchoArgs struct {
+		Message string `json:"message" graphql:"message,required" description:"Message to echo back"`
+	}
+
+	return NewTypedResolver[string, EchoArgs]("echo").
+		WithResolver(func(ctx context.Context, args EchoArgs) (*string, error) {
+			// No need for GetArgString - args.Message is already type-safe!
+			if args.Message == "" {
+				return nil, errors.New("no message provided")
 			}
-			return message, nil
+			return &args.Message, nil
 		}).BuildMutation()
 }
+*/
 
 // buildSchemaFromContext builds a GraphQL schema from the GraphContext
 // Priority: Schema > SchemaParams > Default hello world schema

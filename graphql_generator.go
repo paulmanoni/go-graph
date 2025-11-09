@@ -318,7 +318,7 @@ func (g *FieldGenerator[T]) generateInputFields(t reflect.Type) graphql.InputObj
 func (g *FieldGenerator[T]) getInputType(t reflect.Type, field reflect.StructField) graphql.Input {
 	isRequired := strings.Contains(field.Tag.Get("graphql"), "required")
 
-	baseType := g.getBaseInputType(t)
+	baseType := g.getBaseInputType(t, field.Name)
 
 	if baseType == nil {
 		return nil
@@ -331,10 +331,30 @@ func (g *FieldGenerator[T]) getInputType(t reflect.Type, field reflect.StructFie
 	return baseType
 }
 
-func (g *FieldGenerator[T]) getBaseInputType(t reflect.Type) graphql.Input {
+func (g *FieldGenerator[T]) getInputTypeWithContext(t reflect.Type, field reflect.StructField, parentTypeName string) graphql.Input {
+	isRequired := strings.Contains(field.Tag.Get("graphql"), "required")
+
+	baseType := g.getBaseInputTypeWithContext(t, field.Name, parentTypeName)
+
+	if baseType == nil {
+		return nil
+	}
+
+	if isRequired {
+		return graphql.NewNonNull(baseType)
+	}
+
+	return baseType
+}
+
+func (g *FieldGenerator[T]) getBaseInputType(t reflect.Type, fieldName string) graphql.Input {
+	return g.getBaseInputTypeWithContext(t, fieldName, "")
+}
+
+func (g *FieldGenerator[T]) getBaseInputTypeWithContext(t reflect.Type, fieldName string, parentTypeName string) graphql.Input {
 	switch t.Kind() {
 	case reflect.Ptr:
-		return g.getBaseInputType(t.Elem())
+		return g.getBaseInputTypeWithContext(t.Elem(), fieldName, parentTypeName)
 
 	case reflect.String:
 		return graphql.String
@@ -352,19 +372,22 @@ func (g *FieldGenerator[T]) getBaseInputType(t reflect.Type) graphql.Input {
 		return graphql.Boolean
 
 	case reflect.Slice, reflect.Array:
-		elemType := g.getBaseInputType(t.Elem())
+		elemType := g.getBaseInputTypeWithContext(t.Elem(), fieldName, parentTypeName)
 		if elemType == nil {
 			return nil
 		}
 		return graphql.NewList(elemType)
 
 	case reflect.Struct:
-		typeName := t.Name()
-		if typeName == "" {
-			typeName = fmt.Sprintf("AnonymousInputStruct_%p", &t)
+		// Use parent type name for anonymous structs, otherwise use the field name
+		var inputTypeName string
+		if t.Name() == "" && parentTypeName != "" {
+			// Anonymous struct - use parent type name
+			inputTypeName = parentTypeName + "Input"
+		} else {
+			// Named struct - use getInputTypeName
+			inputTypeName = getInputTypeName(t, fieldName)
 		}
-
-		inputTypeName := typeName + "Input"
 
 		// Check if input type already exists in the global registry (from unified resolver)
 		inputTypeRegistryMu.RLock()

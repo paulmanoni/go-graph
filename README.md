@@ -5,11 +5,14 @@ A modern, secure GraphQL handler for Go with built-in authentication, validation
 ## Features
 
 - 🚀 **Zero Config Start** - Default hello world schema included
-- 🔧 **Fluent Builder API** - Clean, type-safe schema construction
+- 🔧 **Type-Safe Resolvers** - Compile-time type safety with generic resolvers
+- 🎯 **Type-Safe Arguments** - Automatic argument parsing with `NewArgsResolver`
+- 🏗️ **Fluent Builder API** - Clean, intuitive schema construction
 - 🔐 **Built-in Auth** - Automatic Bearer token extraction
 - 🛡️ **Security First** - Query depth, complexity, and introspection protection
 - 🧹 **Response Sanitization** - Remove field suggestions from errors
 - ⚡ **Framework Agnostic** - Works with net/http, Gin, or any framework
+- ⚡ **High Performance** - ~60μs per request, 100k+ RPS capable
 
 Built on top of [graphql-go](https://github.com/graphql-go/graphql).
 
@@ -57,7 +60,7 @@ mutation { echo(message: "test") }
 
 ### Option 2: Builder Pattern (Recommended)
 
-Use the fluent builder API for clean schema construction:
+Use the fluent builder API for clean, type-safe schema construction:
 
 ```go
 package main
@@ -68,24 +71,30 @@ import (
     "github.com/paulmanoni/go-graph"
 )
 
-// Define your queries
+type User struct {
+    ID   string `json:"id"`
+    Name string `json:"name"`
+}
+
+// Define your queries with type-safe resolvers
 func getHello() graph.QueryField {
     return graph.NewResolver[string]("hello").
-        WithResolver(func(p graph.ResolveParams) (interface{}, error) {
-            return "Hello, World!", nil
+        WithResolver(func(p graphql.ResolveParams) (*string, error) {
+            msg := "Hello, World!"
+            return &msg, nil
         }).BuildQuery()
 }
 
 func getUser() graph.QueryField {
     return graph.NewResolver[User]("user").
-        WithArgs(graph.FieldConfigArgument{
-            "id": &graph.ArgumentConfig{
-                Type: graph.String,
+        WithArgs(graphql.FieldConfigArgument{
+            "id": &graphql.ArgumentConfig{
+                Type: graphql.String,
             },
         }).
-        WithResolver(func(p graph.ResolveParams) (interface{}, error) {
+        WithResolver(func(p graphql.ResolveParams) (*User, error) {
             id, _ := graph.GetArgString(p, "id")
-            return User{ID: id, Name: "Alice"}, nil
+            return &User{ID: id, Name: "Alice"}, nil
         }).BuildQuery()
 }
 
@@ -162,7 +171,7 @@ Access in resolvers:
 ```go
 func getProtectedQuery() graph.QueryField {
     return graph.NewResolver[User]("me").
-        WithResolver(func(p graph.ResolveParams) (interface{}, error) {
+        WithResolver(func(p graphql.ResolveParams) (*User, error) {
             // Get token
             token, err := graph.GetRootString(p, "token")
             if err != nil {
@@ -175,7 +184,7 @@ func getProtectedQuery() graph.QueryField {
                 return nil, err
             }
 
-            return user, nil
+            return &user, nil
         }).BuildQuery()
 }
 ```
@@ -298,6 +307,310 @@ token, err := graph.GetRootString(p, "token")
 // Get user details
 var user User
 err := graph.GetRootInfo(p, "details", &user)
+```
+
+## Type-Safe Resolvers
+
+### `WithResolver` - Type-Safe (Recommended)
+
+The `WithResolver` method provides compile-time type safety by accepting a function that returns `*T` instead of `interface{}`:
+
+```go
+// ✅ Type-safe - returns *User
+graph.NewResolver[User]("user").
+    WithResolver(func(p graphql.ResolveParams) (*User, error) {
+        id, _ := graph.GetArgString(p, "id")
+        user := db.GetUserByID(id)  // Most ORMs return *User
+        return user, nil             // No type assertions needed!
+    }).BuildQuery()
+
+// ✅ Works with lists - returns *[]User
+graph.NewResolver[User]("users").
+    AsList().
+    WithResolver(func(p graphql.ResolveParams) (*[]User, error) {
+        users := db.ListUsers()
+        return &users, nil
+    }).BuildQuery()
+
+// ✅ Works with primitives - returns *string
+graph.NewResolver[string]("message").
+    WithResolver(func(p graphql.ResolveParams) (*string, error) {
+        msg := "Hello!"
+        return &msg, nil
+    }).BuildQuery()
+```
+
+**Benefits:**
+- ✅ No type assertions or casts needed
+- ✅ Compiler catches type mismatches at build time
+- ✅ Better IDE autocomplete and refactoring
+- ✅ Cleaner, more readable code
+- ✅ Works with pointers (can return `nil` for not found)
+
+### `WithRawResolver` - Dynamic Typing
+
+Use `WithRawResolver` when you need to return different types dynamically or work with `interface{}`:
+
+```go
+// Use when return type varies based on conditions
+graph.NewResolver[User]("dynamicData").
+    WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
+        if someCondition {
+            return &User{}, nil
+        }
+        return &Admin{}, nil  // Different type
+    }).BuildQuery()
+```
+
+**When to use:**
+- ⚠️ Return type varies dynamically
+- ⚠️ Working with legacy code expecting `interface{}`
+- ⚠️ Type can't be determined at compile time
+
+**Prefer `WithResolver` in 99% of cases** - only use `WithRawResolver` when absolutely necessary.
+
+### Examples Comparison
+
+**Before (Raw interface{}):**
+```go
+graph.NewResolver[User]("user").
+    WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
+        id, _ := graph.GetArgString(p, "id")
+        user := db.GetUserByID(id)
+        return user, nil  // Returns interface{} - no compile-time safety
+    }).BuildQuery()
+```
+
+**After (Type-safe):**
+```go
+graph.NewResolver[User]("user").
+    WithResolver(func(p graphql.ResolveParams) (*User, error) {
+        id, _ := graph.GetArgString(p, "id")
+        return db.GetUserByID(id), nil  // Returns *User - type-safe!
+    }).BuildQuery()
+```
+
+### Real-World Example
+
+```go
+type Post struct {
+    ID       int    `json:"id"`
+    Title    string `json:"title"`
+    AuthorID int    `json:"authorId"`
+}
+
+// Type-safe query
+func getPost() graph.QueryField {
+    return graph.NewResolver[Post]("post").
+        WithArgs(graphql.FieldConfigArgument{
+            "id": &graphql.ArgumentConfig{Type: graphql.Int},
+        }).
+        WithResolver(func(p graphql.ResolveParams) (*Post, error) {
+            id, err := graph.GetArgInt(p, "id")
+            if err != nil {
+                return nil, err
+            }
+
+            post, err := postService.GetByID(id)
+            if err != nil {
+                return nil, err
+            }
+
+            // Return *Post directly - no type assertions!
+            return post, nil
+        }).BuildQuery()
+}
+
+// Type-safe list query
+func getPosts() graph.QueryField {
+    return graph.NewResolver[Post]("posts").
+        AsList().
+        WithResolver(func(p graphql.ResolveParams) (*[]Post, error) {
+            posts, err := postService.List()
+            if err != nil {
+                return nil, err
+            }
+            return &posts, nil
+        }).BuildQuery()
+}
+
+// Type-safe mutation
+func createPost() graph.MutationField {
+    type CreatePostInput struct {
+        Title    string `json:"title"`
+        AuthorID int    `json:"authorId"`
+    }
+
+    return graph.NewResolver[Post]("createPost").
+        WithInputObject(CreatePostInput{}).
+        WithResolver(func(p graphql.ResolveParams) (*Post, error) {
+            var input CreatePostInput
+            if err := graph.GetArg(p, "input", &input); err != nil {
+                return nil, err
+            }
+
+            return postService.Create(input.Title, input.AuthorID)
+        }).BuildMutation()
+}
+```
+
+## Type-Safe Arguments with NewArgsResolver
+
+`NewArgsResolver` provides compile-time type safety for both the return value AND arguments. The resolver function receives typed arguments directly, eliminating the need for manual argument extraction.
+
+### Basic Usage
+
+```go
+// Struct arguments - auto-generates GraphQL args from struct fields
+type GetUserArgs struct {
+    ID int `json:"id" graphql:"id,required" description:"User ID"`
+}
+
+func getUser() graph.QueryField {
+    return graph.NewArgsResolver[User, GetUserArgs]("user").
+        WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+            // args.ID is already parsed and type-safe!
+            return userService.GetByID(args.ID)
+        }).BuildQuery()
+}
+
+// Primitive arguments - requires field name
+func echo() graph.MutationField {
+    return graph.NewArgsResolver[string, string]("echo", "message").
+        WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+            // args is the message string directly
+            return &args, nil
+        }).BuildMutation()
+}
+```
+
+### Resolver Function Signature
+
+The `WithResolver` method accepts a function with three parameters:
+
+```go
+func(ctx context.Context, p graphql.ResolveParams, args A) (*T, error)
+```
+
+- **`ctx context.Context`** - Request context (can be nil, defaults to Background)
+- **`p graphql.ResolveParams`** - Full GraphQL resolve parameters (for advanced use cases)
+- **`args A`** - Typed arguments parsed and validated
+
+### Anonymous Struct Naming
+
+Anonymous nested structs are automatically given meaningful names based on the parent type:
+
+```go
+type MessageArgs struct {
+    Input struct {
+        Message string `json:"message"`
+        Name    string `json:"name"`
+    } `json:"input"`
+}
+
+// The anonymous Input struct becomes "MessageArgsInput" in GraphQL schema
+func sendMessage() graph.MutationField {
+    return graph.NewArgsResolver[string, MessageArgs]("sendMessage").
+        WithResolver(func(ctx context.Context, p graphql.ResolveParams, args MessageArgs) (*string, error) {
+            response := fmt.Sprintf("Hello %s: %s", args.Input.Name, args.Input.Message)
+            return &response, nil
+        }).BuildMutation()
+}
+```
+
+**GraphQL Schema Generated:**
+```graphql
+type Mutation {
+  sendMessage(input: MessageArgsInput!): String
+}
+
+input MessageArgsInput {
+  message: String
+  name: String
+}
+```
+
+### Benefits
+
+- ✅ **No manual argument extraction** - Arguments are parsed and typed automatically
+- ✅ **Compile-time safety** - Both args and return type are type-checked
+- ✅ **Context access** - Explicit `context.Context` parameter
+- ✅ **Full params access** - Access to `graphql.ResolveParams` when needed
+- ✅ **Auto-generated schema** - Arguments converted to GraphQL types automatically
+- ✅ **Meaningful type names** - Anonymous structs named after parent type
+
+### Comparison with NewResolver
+
+**NewResolver** - Manual argument extraction:
+```go
+graph.NewResolver[User]("user").
+    WithArgs(graphql.FieldConfigArgument{
+        "id": &graphql.ArgumentConfig{Type: graphql.Int},
+    }).
+    WithResolver(func(p graphql.ResolveParams) (*User, error) {
+        id, err := graph.GetArgInt(p, "id")  // Manual extraction
+        if err != nil {
+            return nil, err
+        }
+        return userService.GetByID(id)
+    }).BuildQuery()
+```
+
+**NewArgsResolver** - Type-safe arguments:
+```go
+type GetUserArgs struct {
+    ID int `json:"id" graphql:"id,required"`
+}
+
+graph.NewArgsResolver[User, GetUserArgs]("user").
+    WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+        return userService.GetByID(args.ID)  // Direct access, type-safe!
+    }).BuildQuery()
+```
+
+### Advanced Examples
+
+**With validation tags:**
+```go
+type CreatePostArgs struct {
+    Title   string `json:"title" graphql:"title,required" description:"Post title (required)"`
+    Content string `json:"content" description:"Post content"`
+    Tags    []string `json:"tags" description:"Post tags"`
+}
+
+func createPost() graph.MutationField {
+    return graph.NewArgsResolver[Post, CreatePostArgs]("createPost").
+        WithResolver(func(ctx context.Context, p graphql.ResolveParams, args CreatePostArgs) (*Post, error) {
+            // All fields are already validated and typed
+            post, err := postService.Create(args.Title, args.Content, args.Tags)
+            if err != nil {
+                return nil, err
+            }
+            return post, nil
+        }).BuildMutation()
+}
+```
+
+**With authentication:**
+```go
+type UpdateUserArgs struct {
+    ID   int    `json:"id" graphql:"id,required"`
+    Name string `json:"name" graphql:"name,required"`
+}
+
+func updateUser() graph.MutationField {
+    return graph.NewArgsResolver[User, UpdateUserArgs]("updateUser").
+        WithResolver(func(ctx context.Context, p graphql.ResolveParams, args UpdateUserArgs) (*User, error) {
+            // Extract auth token from root
+            token, err := graph.GetRootString(p, "token")
+            if err != nil {
+                return nil, fmt.Errorf("authentication required")
+            }
+
+            // Use typed args directly
+            return userService.Update(token, args.ID, args.Name)
+        }).BuildMutation()
+}
 ```
 
 ## Framework Integration
@@ -471,6 +784,22 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 | Paginated | ~230 ns | 5 allocs | Pagination wrapper |
 | With Input Object | ~411 ns | 10 allocs | Input type generation |
 
+#### Type-Safe Arguments (NewArgsResolver)
+
+| Operation | Time/op | Allocations | Description |
+|-----------|---------|-------------|-------------|
+| Struct Args Creation | ~863 ns | 17 allocs | Create resolver with struct args |
+| Primitive Args Creation | ~408 ns | 11 allocs | Create resolver with primitive args |
+| Nested Struct Args Creation | ~658 ns | 15 allocs | Create resolver with nested structs |
+| List Resolver Creation | ~600 ns | 14 allocs | Create list resolver with args |
+| Execute Struct Args | ~273 ns | 5 allocs | Execute resolver with struct args |
+| Execute Primitive Args | ~73 ns | 2 allocs | Execute resolver with primitive args |
+| Execute Nested Structs | ~414 ns | 6 allocs | Execute resolver with nested structs |
+| Execute With Context | ~167 ns | 4 allocs | Execute with context.Context |
+| Generate Args From Type | ~1.4 μs | 22 allocs | Auto-generate GraphQL args from struct |
+| Map Args to Struct | ~481 ns | 7 allocs | Parse and map GraphQL args to Go struct |
+| Map Nested Struct | ~361 ns | 4 allocs | Parse nested struct arguments |
+
 #### Advanced Features
 
 | Operation | Time/op | Allocations | Description |
@@ -493,6 +822,8 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 
 - **Zero-allocation primitives**: Token extraction and utility functions have zero heap allocations
 - **Fast validation**: Query validation adds minimal overhead (~700ns-4μs depending on complexity)
+- **Type-safe arguments**: NewArgsResolver execution is blazing fast (~73ns for primitives, ~273ns for structs)
+- **Efficient type generation**: Auto-generating GraphQL args from structs adds minimal overhead (~1.4μs one-time cost)
 - **Efficient caching**: Type registration uses read-write locks for optimal concurrent access
 - **Predictable performance**: End-to-end request handling is consistently under 100μs
 - **Production ready**: Complete stack with all security features runs at ~60μs per request
