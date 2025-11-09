@@ -90,3 +90,5 @@ type GraphContext struct {
 	// Prevents information disclosure by removing "Did you mean X?" suggestions
 	EnableSanitization bool
 }
+
+type ResolveParams graphql.ResolveParams

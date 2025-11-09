@@ -48,7 +48,7 @@ func TestGetArgString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			params := graphql.ResolveParams{Args: tt.args}
-			got, err := GetArgString(params, tt.key)
+			got, err := GetArgString(ResolveParams(params), tt.key)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("GetArgString() error = %v, wantError %v", err, tt.wantError)
@@ -95,7 +95,7 @@ func TestGetArgInt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			params := graphql.ResolveParams{Args: tt.args}
-			got, err := GetArgInt(params, tt.key)
+			got, err := GetArgInt(ResolveParams(params), tt.key)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("GetArgInt() error = %v, wantError %v", err, tt.wantError)
@@ -149,7 +149,7 @@ func TestGetArgBool(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			params := graphql.ResolveParams{Args: tt.args}
-			got, err := GetArgBool(params, tt.key)
+			got, err := GetArgBool(ResolveParams(params), tt.key)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("GetArgBool() error = %v, wantError %v", err, tt.wantError)
@@ -202,7 +202,7 @@ func TestGetArg(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			params := graphql.ResolveParams{Args: tt.args}
 			var got Input
-			err := GetArg(params, tt.key, &got)
+			err := GetArg(ResolveParams(params), tt.key, &got)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("GetArg() error = %v, wantError %v", err, tt.wantError)
@@ -253,7 +253,7 @@ func TestGetRootString(t *testing.T) {
 					RootValue: tt.rootValue,
 				},
 			}
-			got, err := GetRootString(params, tt.key)
+			got, err := GetRootString(ResolveParams(params), tt.key)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("GetRootString() error = %v, wantError %v", err, tt.wantError)
@@ -308,7 +308,7 @@ func TestGetRootInfo(t *testing.T) {
 				},
 			}
 			var got UserDetails
-			err := GetRootInfo(params, tt.key, &got)
+			err := GetRootInfo(ResolveParams(params), tt.key, &got)
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("GetRootInfo() error = %v, wantError %v", err, tt.wantError)
@@ -414,7 +414,7 @@ func TestSchemaBuilder_WithCustomTypes(t *testing.T) {
 				WithArgs(graphql.FieldConfigArgument{
 					"id": &graphql.ArgumentConfig{Type: graphql.Int},
 				}).
-				WithResolver(func(p graphql.ResolveParams) (*User, error) {
+				WithResolver(func(p ResolveParams) (*User, error) {
 					return &User{ID: 1, Name: "Test"}, nil
 				}).BuildQuery(),
 		},
@@ -439,7 +439,7 @@ func TestNewResolver_Simple(t *testing.T) {
 	}
 
 	field := NewResolver[User]("user").
-		WithResolver(func(p graphql.ResolveParams) (*User, error) {
+		WithResolver(func(p ResolveParams) (*User, error) {
 			return &User{ID: 1, Name: "Test"}, nil
 		}).BuildQuery()
 
@@ -467,7 +467,7 @@ func TestNewResolver_WithArgs(t *testing.T) {
 		WithArgs(graphql.FieldConfigArgument{
 			"id": &graphql.ArgumentConfig{Type: graphql.Int},
 		}).
-		WithResolver(func(p graphql.ResolveParams) (*User, error) {
+		WithResolver(func(p ResolveParams) (*User, error) {
 			return &User{ID: 1, Name: "Test"}, nil
 		}).BuildQuery()
 
@@ -489,8 +489,9 @@ func TestNewResolver_AsList(t *testing.T) {
 
 	field := NewResolver[[]User]("users").
 		AsList().
-		WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
-			return []User{{ID: 1, Name: "Test"}}, nil
+		WithResolver(func(p ResolveParams) (*[]User, error) {
+			users := []User{{ID: 1, Name: "Test"}}
+			return &users, nil
 		}).BuildQuery()
 
 	if field.Name() != "users" {
@@ -509,17 +510,18 @@ func TestNewResolver_AsPaginated(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	field := NewResolver[User]("users").
+	field := NewResolver[PaginatedResponse[User]]("users").
 		AsPaginated().
-		WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
-			return PaginatedResponse[User]{
+		WithResolver(func(p ResolveParams) (*PaginatedResponse[User], error) {
+			response := PaginatedResponse[User]{
 				Items:      []User{{ID: 1, Name: "Test"}},
 				TotalCount: 1,
 				PageInfo: PageInfo{
 					HasNextPage:     false,
 					HasPreviousPage: false,
 				},
-			}, nil
+			}
+			return &response, nil
 		}).BuildQuery()
 
 	if field.Name() != "users" {
@@ -970,8 +972,8 @@ func TestBuildSchemaFromContext_WithParams(t *testing.T) {
 		SchemaParams: &SchemaBuilderParams{
 			QueryFields: []QueryField{
 				NewResolver[User]("user").
-					WithRawResolver(func(p graphql.ResolveParams) (interface{}, error) {
-						return User{ID: 1, Name: "Test"}, nil
+					WithResolver(func(p ResolveParams) (*User, error) {
+						return &User{ID: 1, Name: "Test"}, nil
 					}).BuildQuery(),
 			},
 		},
@@ -1031,7 +1033,7 @@ func TestNewArgsResolver_StructArgs(t *testing.T) {
 
 	// Create resolver with struct arguments
 	resolver := NewArgsResolver[User, GetUserArgs]("user").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
 			return &User{ID: args.ID, Name: args.Name}, nil
 		})
 
@@ -1076,7 +1078,7 @@ func TestNewArgsResolver_StructArgs(t *testing.T) {
 func TestNewArgsResolver_PrimitiveArgs_String(t *testing.T) {
 	// Create resolver with primitive string argument
 	resolver := NewArgsResolver[string, string]("echo", "message").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args string) (*string, error) {
 			return &args, nil
 		})
 
@@ -1116,7 +1118,7 @@ func TestNewArgsResolver_PrimitiveArgs_String(t *testing.T) {
 func TestNewArgsResolver_PrimitiveArgs_Int(t *testing.T) {
 	// Create resolver with primitive int argument
 	resolver := NewArgsResolver[int, int]("double", "number").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args int) (*int, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args int) (*int, error) {
 			result := args * 2
 			return &result, nil
 		})
@@ -1164,7 +1166,7 @@ func TestNewArgsResolver_NestedStructArgs(t *testing.T) {
 
 	// Create resolver with nested struct arguments
 	resolver := NewArgsResolver[string, MessageArgs]("sendMessage").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args MessageArgs) (*string, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args MessageArgs) (*string, error) {
 			result := args.Input.Name + ": " + args.Input.Message
 			return &result, nil
 		})
@@ -1218,7 +1220,7 @@ func TestNewArgsResolver_WithContext(t *testing.T) {
 
 	// Create resolver that uses context
 	resolver := NewArgsResolver[User, GetUserArgs]("user").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
 			// Check if context is available
 			if ctx == nil {
 				t.Error("Context should not be nil")
@@ -1271,7 +1273,7 @@ func TestNewArgsResolver_AsList(t *testing.T) {
 	// Create resolver that returns a list
 	resolver := NewArgsResolver[[]User, ListUsersArgs]("users").
 		AsList().
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args ListUsersArgs) (*[]User, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args ListUsersArgs) (*[]User, error) {
 			users := make([]User, args.Limit)
 			for i := 0; i < args.Limit; i++ {
 				users[i] = User{ID: i + 1, Name: "User"}
@@ -1315,7 +1317,7 @@ func TestNewArgsResolver_WithDescription(t *testing.T) {
 
 	resolver := NewArgsResolver[User, GetUserArgs]("user").
 		WithDescription("Get a user by ID").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
 			return &User{ID: args.ID, Name: "Test"}, nil
 		})
 
@@ -1337,7 +1339,7 @@ func TestNewArgsResolver_ErrorHandling(t *testing.T) {
 	}
 
 	resolver := NewArgsResolver[User, GetUserArgs]("user").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
 			if args.ID < 0 {
 				return nil, fmt.Errorf("ID must be positive")
 			}
@@ -1370,7 +1372,7 @@ func TestNewArgsResolver_NilContext(t *testing.T) {
 	}
 
 	resolver := NewArgsResolver[User, GetUserArgs]("user").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args GetUserArgs) (*User, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
 			// Context should default to Background if nil
 			if ctx == nil {
 				t.Error("Context should not be nil, should default to Background")

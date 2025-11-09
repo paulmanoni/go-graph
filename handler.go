@@ -43,7 +43,7 @@ func ExtractBearerToken(r *http.Request) string {
 // getDefaultHelloQuery creates a default hello world query
 func getDefaultHelloQuery() QueryField {
 	return NewResolver[string]("hello").
-		WithResolver(func(p graphql.ResolveParams) (*string, error) {
+		WithResolver(func(p ResolveParams) (*string, error) {
 			name := "Hello world"
 			return &name, nil
 		}).BuildQuery()
@@ -52,7 +52,7 @@ func getDefaultHelloQuery() QueryField {
 // getDefaultEchoMutation creates a default echo mutation
 func getDefaultEchoMutation() MutationField {
 	return NewArgsResolver[string, string]("echo", "message").
-		WithResolver(func(ctx context.Context, p graphql.ResolveParams, args string) (*string, error) {
+		WithResolver(func(ctx context.Context, p ResolveParams, args string) (*string, error) {
 			return &args, nil
 		}).
 		BuildMutation()

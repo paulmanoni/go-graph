@@ -652,11 +652,6 @@ func createPageInfoType() *graphql.Object {
 	return pageInfoType
 }
 
-func (r *UnifiedResolver[T]) WithRawResolver(resolver graphql.FieldResolveFn) *UnifiedResolver[T] {
-	r.resolver = resolver
-	return r
-}
-
 // WithResolver sets a type-safe resolver function that returns *T instead of interface{}
 // This provides better type safety and eliminates the need for type assertions or casts
 //
@@ -680,16 +675,16 @@ func (r *UnifiedResolver[T]) WithRawResolver(resolver graphql.FieldResolveFn) *U
 //			msg := "Hello, World!"
 //			return &msg, nil
 //		}).BuildQuery()
-func (r *UnifiedResolver[T]) WithResolver(resolver func(p graphql.ResolveParams) (*T, error)) *UnifiedResolver[T] {
+func (r *UnifiedResolver[T]) WithResolver(resolver func(p ResolveParams) (*T, error)) *UnifiedResolver[T] {
 	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-		return resolver(p)
+		return resolver(ResolveParams(p))
 	}
 	return r
 }
 
-func (r *UnifiedResolver[T]) WithAuthResolver(resolver func(p graphql.ResolveParams) (*T, error)) *UnifiedResolver[T] {
+func (r *UnifiedResolver[T]) WithAuthResolver(resolver func(p ResolveParams) (*T, error)) *UnifiedResolver[T] {
 	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-		return resolver(p)
+		return resolver(ResolveParams(p))
 	}
 	return r
 }
@@ -801,7 +796,7 @@ func getPrimitiveGraphQLType(t reflect.Type) graphql.Input {
 //		WithResolver(func(ctx context.Context, args GetPostArgs) (*Post, error) {
 //			return postService.GetByID(args.ID)
 //		})
-func (r *TypedArgsResolver[T, A]) WithResolver(resolver func(ctx context.Context, p graphql.ResolveParams, args A) (*T, error)) *TypedArgsResolver[T, A] {
+func (r *TypedArgsResolver[T, A]) WithResolver(resolver func(ctx context.Context, p ResolveParams, args A) (*T, error)) *TypedArgsResolver[T, A] {
 	r.base.resolver = func(p graphql.ResolveParams) (interface{}, error) {
 		// Extract context from ResolveParams
 		ctx := p.Context
@@ -834,7 +829,7 @@ func (r *TypedArgsResolver[T, A]) WithResolver(resolver func(ctx context.Context
 		}
 
 		// Call the typed resolver
-		return resolver(ctx, p, args)
+		return resolver(ctx, ResolveParams(p), args)
 	}
 	return r
 }

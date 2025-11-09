@@ -62,7 +62,7 @@ type MutationField interface {
 //	    return nil, fmt.Errorf("authentication required")
 //	}
 //	// Use user.ID, user.Email, etc.
-func GetRootInfo(p graphql.ResolveParams, key string, target interface{}) error {
+func GetRootInfo(p ResolveParams, key string, target interface{}) error {
 	if p.Info.RootValue == nil {
 		return fmt.Errorf("root value is nil")
 	}
@@ -126,7 +126,7 @@ func GetRootInfo(p graphql.ResolveParams, key string, target interface{}) error 
 //	    return nil, fmt.Errorf("authentication required")
 //	}
 //	// Validate token...
-func GetRootString(p graphql.ResolveParams, key string) (string, error) {
+func GetRootString(p ResolveParams, key string) (string, error) {
 	if p.Info.RootValue == nil {
 		return "", fmt.Errorf("root value is nil")
 	}
@@ -168,7 +168,7 @@ func GetRootString(p graphql.ResolveParams, key string) (string, error) {
 //	    return nil, err
 //	}
 //	// Use input.Name, input.Email, etc.
-func GetArg(p graphql.ResolveParams, key string, target interface{}) error {
+func GetArg(p ResolveParams, key string, target interface{}) error {
 	value, exists := p.Args[key]
 	if !exists {
 		return fmt.Errorf("argument '%s' not found", key)
@@ -221,7 +221,7 @@ func GetArg(p graphql.ResolveParams, key string, target interface{}) error {
 // Example:
 //
 //	name, err := graph.GetArgString(p, "name")
-func GetArgString(p graphql.ResolveParams, key string) (string, error) {
+func GetArgString(p ResolveParams, key string) (string, error) {
 	value, exists := p.Args[key]
 	if !exists {
 		return "", fmt.Errorf("argument '%s' not found", key)
@@ -242,7 +242,7 @@ func GetArgString(p graphql.ResolveParams, key string) (string, error) {
 // Example:
 //
 //	age, err := graph.GetArgInt(p, "age")
-func GetArgInt(p graphql.ResolveParams, key string) (int, error) {
+func GetArgInt(p ResolveParams, key string) (int, error) {
 	value, exists := p.Args[key]
 	if !exists {
 		return 0, fmt.Errorf("argument '%s' not found", key)
@@ -265,7 +265,7 @@ func GetArgInt(p graphql.ResolveParams, key string) (int, error) {
 // Example:
 //
 //	active, err := graph.GetArgBool(p, "active")
-func GetArgBool(p graphql.ResolveParams, key string) (bool, error) {
+func GetArgBool(p ResolveParams, key string) (bool, error) {
 	value, exists := p.Args[key]
 	if !exists {
 		return false, fmt.Errorf("argument '%s' not found", key)
