@@ -11,6 +11,7 @@ A modern, secure GraphQL handler for Go with built-in authentication, validation
 - 🔐 **Built-in Auth** - Automatic Bearer token extraction
 - 🛡️ **Security First** - Query depth, complexity, and introspection protection
 - 🧹 **Response Sanitization** - Remove field suggestions from errors
+- 🎭 **Middleware System** - Built-in logging, auth, caching + custom middleware support
 - ⚡ **Framework Agnostic** - Works with net/http, Gin, or any framework
 - ⚡ **High Performance** - ~60μs per request, 100k+ RPS capable
 
@@ -548,7 +549,25 @@ func createPost() graph.MutationField {
 }
 ```
 
-**With authentication:**
+**With authentication (using middleware):**
+```go
+type UpdateUserArgs struct {
+    ID   int    `json:"id" graphql:"id,required"`
+    Name string `json:"name" graphql:"name,required"`
+}
+
+func updateUser() graph.MutationField {
+    return graph.NewArgsResolver[User, UpdateUserArgs]("updateUser").
+        WithMiddleware(graph.AuthMiddleware("admin")).  // Require admin role
+        WithResolver(func(ctx context.Context, p graph.ResolveParams, args UpdateUserArgs) (*User, error) {
+            // Auth already validated by middleware
+            // Use typed args directly
+            return userService.Update(args.ID, args.Name)
+        }).BuildMutation()
+}
+```
+
+**With manual token extraction:**
 ```go
 type UpdateUserArgs struct {
     ID   int    `json:"id" graphql:"id,required"`
@@ -569,6 +588,229 @@ func updateUser() graph.MutationField {
         }).BuildMutation()
 }
 ```
+
+## Middleware
+
+The library provides a powerful middleware system for adding cross-cutting concerns like authentication, logging, caching, and more to your resolvers.
+
+### Resolver Middleware
+
+Apply middleware to the entire resolver using `WithMiddleware()`. Middleware functions are applied in the order they're added (first added = outermost layer):
+
+```go
+graph.NewResolver[User]("user").
+    WithMiddleware(graph.LoggingMiddleware).
+    WithMiddleware(graph.AuthMiddleware("admin")).
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id, _ := graph.GetArgInt(p, "id")
+        return userService.GetByID(id)
+    }).BuildQuery()
+```
+
+**Execution flow:**
+1. LoggingMiddleware (starts timer)
+2. AuthMiddleware (checks permissions)
+3. Your resolver (executes business logic)
+4. AuthMiddleware (returns)
+5. LoggingMiddleware (logs duration)
+
+### Built-in Middleware
+
+#### LoggingMiddleware
+
+Logs resolver execution time to stdout:
+
+```go
+graph.NewResolver[Post]("post").
+    WithMiddleware(graph.LoggingMiddleware).
+    WithResolver(func(p graph.ResolveParams) (*Post, error) {
+        return postService.GetByID(id)
+    }).BuildQuery()
+
+// Output: Field post resolved in 2.5ms
+```
+
+#### AuthMiddleware
+
+Requires a specific user role from context:
+
+```go
+graph.NewResolver[User]("adminUser").
+    WithMiddleware(graph.AuthMiddleware("admin")).
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        return userService.GetAdmin()
+    }).BuildQuery()
+```
+
+#### CacheMiddleware
+
+Caches resolver results based on a custom key function:
+
+```go
+graph.NewResolver[Product]("product").
+    WithMiddleware(graph.CacheMiddleware(func(p graph.ResolveParams) string {
+        id, _ := graph.GetArgInt(p, "id")
+        return fmt.Sprintf("product:%d", id)
+    })).
+    WithResolver(func(p graph.ResolveParams) (*Product, error) {
+        // Only executes on cache miss
+        id, _ := graph.GetArgInt(p, "id")
+        return productService.GetByID(id)
+    }).BuildQuery()
+```
+
+### Custom Middleware
+
+Create custom middleware by implementing the `FieldMiddleware` function signature:
+
+```go
+// FieldMiddleware wraps a resolver with additional functionality
+type FieldMiddleware func(next FieldResolveFn) FieldResolveFn
+
+// Example: Rate limiting middleware
+func RateLimitMiddleware(limit int) graph.FieldMiddleware {
+    requests := make(map[string]int)
+    var mu sync.Mutex
+
+    return func(next graph.FieldResolveFn) graph.FieldResolveFn {
+        return func(p graph.ResolveParams) (interface{}, error) {
+            // Extract user ID from context
+            userID := p.Context.Value("userID").(string)
+
+            mu.Lock()
+            if requests[userID] >= limit {
+                mu.Unlock()
+                return nil, fmt.Errorf("rate limit exceeded")
+            }
+            requests[userID]++
+            mu.Unlock()
+
+            return next(p)
+        }
+    }
+}
+
+// Usage
+graph.NewResolver[User]("user").
+    WithMiddleware(RateLimitMiddleware(100)).
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        return userService.GetByID(id)
+    }).BuildQuery()
+```
+
+### Middleware Patterns
+
+#### Stacking Multiple Middleware
+
+Chain multiple middleware for complex behavior:
+
+```go
+graph.NewResolver[User]("user").
+    WithMiddleware(graph.LoggingMiddleware).           // 1. Log timing
+    WithMiddleware(graph.AuthMiddleware("user")).      // 2. Check auth
+    WithMiddleware(RateLimitMiddleware(100)).          // 3. Rate limit
+    WithMiddleware(graph.CacheMiddleware(cacheKeyFn)). // 4. Cache results
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        return userService.GetByID(id)
+    }).BuildQuery()
+```
+
+#### Field-Level Middleware
+
+Apply middleware to specific fields within a type:
+
+```go
+graph.NewResolver[User]("users").
+    AsList().
+    WithFieldMiddleware("email", graph.AuthMiddleware("admin")).
+    WithFieldMiddleware("salary", graph.AuthMiddleware("hr")).
+    WithResolver(func(p graph.ResolveParams) (*[]User, error) {
+        return userService.List(), nil
+    }).BuildQuery()
+```
+
+#### Permission Middleware (Convenience Method)
+
+`WithPermission()` is a convenience wrapper around `WithMiddleware()` for authorization:
+
+```go
+graph.NewResolver[User]("deleteUser").
+    AsMutation().
+    WithPermission(graph.AuthMiddleware("admin")).
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id, _ := graph.GetArgInt(p, "id")
+        return userService.Delete(id)
+    }).BuildMutation()
+```
+
+### Advanced Middleware Examples
+
+#### Context Injection Middleware
+
+```go
+func InjectDependencies(db *gorm.DB, cache *redis.Client) graph.FieldMiddleware {
+    return func(next graph.FieldResolveFn) graph.FieldResolveFn {
+        return func(p graph.ResolveParams) (interface{}, error) {
+            ctx := p.Context
+            ctx = context.WithValue(ctx, "db", db)
+            ctx = context.WithValue(ctx, "cache", cache)
+
+            // Create new params with injected context
+            newParams := p
+            newParams.Context = ctx
+
+            return next(newParams)
+        }
+    }
+}
+```
+
+#### Error Handling Middleware
+
+```go
+func ErrorHandlingMiddleware(next graph.FieldResolveFn) graph.FieldResolveFn {
+    return func(p graph.ResolveParams) (interface{}, error) {
+        result, err := next(p)
+        if err != nil {
+            // Log error
+            log.Printf("Error in %s: %v", p.Info.FieldName, err)
+
+            // Transform error for user
+            return nil, fmt.Errorf("an error occurred: please contact support")
+        }
+        return result, nil
+    }
+}
+```
+
+#### Performance Tracking Middleware
+
+```go
+func MetricsMiddleware(metrics *prometheus.Registry) graph.FieldMiddleware {
+    return func(next graph.FieldResolveFn) graph.FieldResolveFn {
+        return func(p graph.ResolveParams) (interface{}, error) {
+            start := time.Now()
+            result, err := next(p)
+            duration := time.Since(start)
+
+            // Record metrics
+            fieldName := fmt.Sprintf("%s.%s", p.Info.ParentType.Name(), p.Info.FieldName)
+            recordMetric(metrics, fieldName, duration, err != nil)
+
+            return result, err
+        }
+    }
+}
+```
+
+### Middleware Best Practices
+
+1. **Order matters**: Place authentication before caching, logging outermost
+2. **Keep middleware pure**: Avoid side effects when possible
+3. **Use context for data**: Pass request-scoped data via context
+4. **Handle errors gracefully**: Always return meaningful errors
+5. **Measure performance**: Use logging/metrics middleware to track slow resolvers
+6. **Batch database queries**: Use dataloaders to prevent N+1 queries
 
 ## Framework Integration
 

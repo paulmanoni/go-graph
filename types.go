@@ -92,3 +92,5 @@ type GraphContext struct {
 }
 
 type ResolveParams graphql.ResolveParams
+
+type FieldResolveFn func(p ResolveParams) (interface{}, error)

@@ -85,10 +85,11 @@ type UnifiedResolver[T any] struct {
 	useInputObject         bool
 	nullableInput          bool
 	inputName              string
-	permissionMiddleware   FieldMiddleware
+	resolverMiddlewares    []FieldMiddleware // Middleware stack applied to the main resolver
 }
 
-type FieldMiddleware func(next graphql.FieldResolveFn) graphql.FieldResolveFn
+// FieldMiddleware wraps a field resolver with additional functionality (auth, logging, caching, etc.)
+type FieldMiddleware func(next FieldResolveFn) FieldResolveFn
 
 // NewResolver creates a unified resolver for all GraphQL operations (queries, mutations, lists, pagination).
 // This is the main entry point for creating GraphQL resolvers with extensive customization capabilities.
@@ -658,20 +659,20 @@ func createPageInfoType() *graphql.Object {
 // Example usage:
 //
 //	NewResolver[User]("user").
-//		WithResolver(func(p graphql.ResolveParams) (*User, error) {
+//		WithResolver(func(p graph.ResolveParams) (*User, error) {
 //			id, _ := GetArgInt(p, "id")
 //			return userService.GetByID(id)
 //		}).BuildQuery()
 //
 //	NewResolver[User]("users").
 //		AsList().
-//		WithResolver(func(p graphql.ResolveParams) (*[]User, error) {
+//		WithResolver(func(p graph.ResolveParams) (*[]User, error) {
 //			users := userService.List()
 //			return &users, nil
 //		}).BuildQuery()
 //
 //	NewResolver[string]("hello").
-//		WithResolver(func(p graphql.ResolveParams) (*string, error) {
+//		WithResolver(func(p graph.ResolveParams) (*string, error) {
 //			msg := "Hello, World!"
 //			return &msg, nil
 //		}).BuildQuery()
@@ -682,10 +683,21 @@ func (r *UnifiedResolver[T]) WithResolver(resolver func(p ResolveParams) (*T, er
 	return r
 }
 
-func (r *UnifiedResolver[T]) WithAuthResolver(resolver func(p ResolveParams) (*T, error)) *UnifiedResolver[T] {
-	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-		return resolver(ResolveParams(p))
-	}
+// WithMiddleware adds middleware to the main resolver.
+// Middleware functions are applied in the order they are added (first added = outermost layer).
+// This is the foundation for all resolver-level middleware (auth, logging, caching, etc.).
+//
+// Example usage:
+//
+//	NewResolver[User]("user").
+//		WithMiddleware(LoggingMiddleware).
+//		WithMiddleware(AuthMiddleware("admin")).
+//		WithResolver(func(p ResolveParams) (*User, error) {
+//			return userService.GetByID(p.Args["id"].(int))
+//		}).
+//		BuildQuery()
+func (r *UnifiedResolver[T]) WithMiddleware(middleware FieldMiddleware) *UnifiedResolver[T] {
+	r.resolverMiddlewares = append(r.resolverMiddlewares, middleware)
 	return r
 }
 
@@ -706,19 +718,19 @@ type TypedArgsResolver[T any, A any] struct {
 //		ID int `graphql:"id,required"`
 //	}
 //
-//	NewTypedResolver[User, GetUserArgs]("user").
+//	NewArgsResolver[User, GetUserArgs]("user").
 //		WithResolver(func(ctx context.Context, args GetUserArgs) (*User, error) {
 //			return userService.GetByID(args.ID)
 //		}).BuildQuery()
 //
 // For primitive arguments (requires argName parameter):
 //
-//	NewTypedResolver[string, string]("echo", "message").
+//	NewArgsResolver[string, string]("echo", "message").
 //		WithResolver(func(ctx context.Context, message string) (*string, error) {
 //			return &message, nil
 //		}).BuildMutation()
 //
-//	NewTypedResolver[User, int]("user", "id").
+//	NewArgsResolver[User, int]("user", "id").
 //		WithResolver(func(ctx context.Context, id int) (*User, error) {
 //			return userService.GetByID(id)
 //		}).BuildQuery()
@@ -992,9 +1004,9 @@ func (r *UnifiedResolver[T]) WithFieldMiddleware(fieldName string, middleware Fi
 }
 
 // WithPermission adds permission middleware to the resolver (similar to Python @permission_classes decorator)
+// This is now just a convenience wrapper around WithMiddleware for backwards compatibility
 func (r *UnifiedResolver[T]) WithPermission(middleware FieldMiddleware) *UnifiedResolver[T] {
-	r.permissionMiddleware = middleware
-	return r
+	return r.WithMiddleware(middleware)
 }
 
 func (r *UnifiedResolver[T]) WithCustomField(name string, field *graphql.Field) *UnifiedResolver[T] {
@@ -1088,10 +1100,19 @@ func (r *UnifiedResolver[T]) Serve() *graphql.Field {
 		}
 	}
 
-	// Apply permission middleware if it exists
+	// Apply middleware stack to the resolver
 	resolver := r.resolver
-	if r.permissionMiddleware != nil {
-		resolver = r.permissionMiddleware(resolver)
+
+	// Convert and apply middlewares if any exist
+	if len(r.resolverMiddlewares) > 0 {
+		// Wrap graphql.FieldResolveFn to our FieldResolveFn
+		wrappedResolver := wrapGraphQLResolver(resolver)
+
+		// Apply resolver middlewares in order (first added = outermost layer)
+		wrappedResolver = applyMiddlewares(wrappedResolver, r.resolverMiddlewares)
+
+		// Convert back to graphql.FieldResolveFn
+		resolver = unwrapGraphQLResolver(wrappedResolver)
 	}
 
 	return &graphql.Field{
@@ -1182,7 +1203,10 @@ func (r *UnifiedResolver[T]) generateObjectTypeWithOverrides() *graphql.Object {
 			// Apply middleware if any
 			finalResolve := override
 			if middlewares, hasMiddleware := r.fieldMiddleware[fieldName]; hasMiddleware {
-				finalResolve = applyMiddlewares(override, middlewares)
+				// Wrap, apply middleware, then unwrap
+				wrapped := wrapGraphQLResolver(override)
+				wrapped = applyMiddlewares(wrapped, middlewares)
+				finalResolve = unwrapGraphQLResolver(wrapped)
 			}
 
 			// Set up fallback to original resolver if needed
@@ -1290,7 +1314,24 @@ func (r *UnifiedResolver[T]) generateInputObject(inputType interface{}, name str
 }
 
 // Utility Functions for Middleware and Resolvers
-func applyMiddlewares(resolver graphql.FieldResolveFn, middlewares []FieldMiddleware) graphql.FieldResolveFn {
+
+// wrapGraphQLResolver converts graphql.FieldResolveFn to our custom FieldResolveFn
+func wrapGraphQLResolver(resolver graphql.FieldResolveFn) FieldResolveFn {
+	return func(p ResolveParams) (interface{}, error) {
+		// Convert ResolveParams to graphql.ResolveParams
+		return resolver(graphql.ResolveParams(p))
+	}
+}
+
+// unwrapGraphQLResolver converts our custom FieldResolveFn to graphql.FieldResolveFn
+func unwrapGraphQLResolver(resolver FieldResolveFn) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (interface{}, error) {
+		// Convert graphql.ResolveParams to ResolveParams
+		return resolver(ResolveParams(p))
+	}
+}
+
+func applyMiddlewares(resolver FieldResolveFn, middlewares []FieldMiddleware) FieldResolveFn {
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		resolver = middlewares[i](resolver)
 	}
@@ -1298,8 +1339,10 @@ func applyMiddlewares(resolver graphql.FieldResolveFn, middlewares []FieldMiddle
 }
 
 // Common Middleware Functions
-func LoggingMiddleware(next graphql.FieldResolveFn) graphql.FieldResolveFn {
-	return func(p graphql.ResolveParams) (interface{}, error) {
+
+// LoggingMiddleware logs field resolution time
+func LoggingMiddleware(next FieldResolveFn) FieldResolveFn {
+	return func(p ResolveParams) (interface{}, error) {
 		start := time.Now()
 		result, err := next(p)
 		fmt.Printf("Field %s resolved in %v\n", p.Info.FieldName, time.Since(start))
@@ -1307,9 +1350,10 @@ func LoggingMiddleware(next graphql.FieldResolveFn) graphql.FieldResolveFn {
 	}
 }
 
+// AuthMiddleware requires a specific user role
 func AuthMiddleware(requiredRole string) FieldMiddleware {
-	return func(next graphql.FieldResolveFn) graphql.FieldResolveFn {
-		return func(p graphql.ResolveParams) (interface{}, error) {
+	return func(next FieldResolveFn) FieldResolveFn {
+		return func(p ResolveParams) (interface{}, error) {
 			if userRole, exists := p.Context.Value("userRole").(string); exists {
 				if userRole != requiredRole {
 					return nil, fmt.Errorf("insufficient permissions")
@@ -1320,10 +1364,11 @@ func AuthMiddleware(requiredRole string) FieldMiddleware {
 	}
 }
 
-func CacheMiddleware(cacheKey func(graphql.ResolveParams) string) FieldMiddleware {
+// CacheMiddleware caches field results based on a key function
+func CacheMiddleware(cacheKey func(ResolveParams) string) FieldMiddleware {
 	cache := make(map[string]interface{})
-	return func(next graphql.FieldResolveFn) graphql.FieldResolveFn {
-		return func(p graphql.ResolveParams) (interface{}, error) {
+	return func(next FieldResolveFn) FieldResolveFn {
+		return func(p ResolveParams) (interface{}, error) {
 			key := cacheKey(p)
 			if cached, exists := cache[key]; exists {
 				return cached, nil
@@ -1338,6 +1383,8 @@ func CacheMiddleware(cacheKey func(graphql.ResolveParams) string) FieldMiddlewar
 }
 
 // Helper Functions for Common Resolvers
+
+// AsyncFieldResolver executes a resolver asynchronously
 func AsyncFieldResolver(resolver graphql.FieldResolveFn) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
 		type result struct {
@@ -1356,6 +1403,7 @@ func AsyncFieldResolver(resolver graphql.FieldResolveFn) graphql.FieldResolveFn 
 	}
 }
 
+// CachedFieldResolver caches field results with a key function
 func CachedFieldResolver(cacheKey func(graphql.ResolveParams) string, resolver graphql.FieldResolveFn) graphql.FieldResolveFn {
 	cache := make(map[string]interface{})
 
@@ -1373,6 +1421,7 @@ func CachedFieldResolver(cacheKey func(graphql.ResolveParams) string, resolver g
 	}
 }
 
+// LazyFieldResolver loads a field only when requested
 func LazyFieldResolver(fieldName string, loader func(interface{}) (interface{}, error)) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
 		source := reflect.ValueOf(p.Source)
@@ -1390,6 +1439,8 @@ func LazyFieldResolver(fieldName string, loader func(interface{}) (interface{}, 
 }
 
 // Convenience Functions
+
+// DataTransformResolver applies a transformation to a field value
 func DataTransformResolver(transform func(interface{}) interface{}) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
 		source := reflect.ValueOf(p.Source)
@@ -1405,6 +1456,7 @@ func DataTransformResolver(transform func(interface{}) interface{}) graphql.Fiel
 	}
 }
 
+// ConditionalResolver resolves based on a condition
 func ConditionalResolver(condition func(graphql.ResolveParams) bool, ifTrue, ifFalse graphql.FieldResolveFn) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (interface{}, error) {
 		if condition(p) {
