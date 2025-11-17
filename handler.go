@@ -78,6 +78,29 @@ func getDefaultEchoMutationTypeSafe() MutationField {
 }
 */
 
+// createWebSocketAuthFn creates an auth function for WebSocket connections
+// that reuses the HTTP authentication logic from GraphContext
+func createWebSocketAuthFn(graphCtx *GraphContext) func(r *http.Request) (interface{}, error) {
+	if graphCtx.UserDetailsFn == nil {
+		return nil
+	}
+
+	return func(r *http.Request) (interface{}, error) {
+		// Use custom token extractor if provided, otherwise use default Bearer token extractor
+		tokenExtractor := graphCtx.TokenExtractorFn
+		if tokenExtractor == nil {
+			tokenExtractor = ExtractBearerToken
+		}
+
+		token := tokenExtractor(r)
+		if token == "" {
+			return nil, nil // No token, no auth
+		}
+
+		return graphCtx.UserDetailsFn(token)
+	}
+}
+
 // buildSchemaFromContext builds a GraphQL schema from the GraphContext
 // Priority: Schema > SchemaParams > Default hello world schema
 func buildSchemaFromContext(graphCtx *GraphContext) (*graphql.Schema, error) {
@@ -235,6 +258,9 @@ func New(graphCtx GraphContext) (*handler.Handler, error) {
 // NewHTTP creates a standard http.HandlerFunc with built-in validation and sanitization support.
 // This is the recommended way to create a GraphQL handler for production use.
 //
+// The handler automatically detects WebSocket upgrade requests and handles them appropriately
+// when subscriptions are enabled (EnableSubscriptions: true).
+//
 // The handler is fully compatible with net/http and any HTTP framework (Gin, Chi, Echo, etc.).
 // If graphCtx is nil, defaults to DEBUG mode with Playground enabled.
 //
@@ -242,12 +268,13 @@ func New(graphCtx GraphContext) (*handler.Handler, error) {
 //   - In DEBUG mode (DEBUG: true): Skips all validation and sanitization for easier development
 //   - In production (DEBUG: false): Enables validation and sanitization based on configuration
 //   - Panics during initialization if schema building fails (fail-fast approach)
+//   - WebSocket upgrade requests are handled when EnableSubscriptions: true
 //
 // Security Features (when DEBUG: false):
 //   - EnableValidation: Validates query depth (max 10), aliases (max 4), complexity (max 200), and blocks introspection
 //   - EnableSanitization: Removes field suggestions from error messages to prevent information disclosure
 //
-// Example:
+// Example without subscriptions:
 //
 //	// Development setup
 //	handler := graph.NewHTTP(&graph.GraphContext{
@@ -272,6 +299,25 @@ func New(graphCtx GraphContext) (*handler.Handler, error) {
 //
 //	http.Handle("/graphql", handler)
 //	http.ListenAndServe(":8080", nil)
+//
+// Example with subscriptions:
+//
+//	pubsub := graph.NewInMemoryPubSub()
+//	defer pubsub.Close()
+//
+//	handler := graph.NewHTTP(&graph.GraphContext{
+//	    SchemaParams: &graph.SchemaBuilderParams{
+//	        QueryFields:        []graph.QueryField{getUserQuery()},
+//	        MutationFields:     []graph.MutationField{createUserMutation()},
+//	        SubscriptionFields: []graph.SubscriptionField{userSubscription(pubsub)},
+//	    },
+//	    PubSub:              pubsub,
+//	    EnableSubscriptions: true,
+//	    DEBUG:               false,
+//	})
+//
+//	http.Handle("/graphql", handler)
+//	http.ListenAndServe(":8080", nil)
 func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 	if graphCtx == nil {
 		graphCtx = &GraphContext{DEBUG: true, Playground: true}
@@ -289,7 +335,31 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 		panic("failed to build GraphQL schema: " + err.Error())
 	}
 
+	// Create WebSocket handler if subscriptions are enabled
+	var wsHandler http.HandlerFunc
+	if graphCtx.EnableSubscriptions {
+		// Set up WebSocket handler
+		wsParams := WebSocketParams{
+			Schema:  schema,
+			PubSub:  graphCtx.PubSub,
+			AuthFn:  createWebSocketAuthFn(graphCtx),
+			CheckOrigin: graphCtx.WebSocketCheckOrigin,
+			RootObjectFn: graphCtx.RootObjectFn,
+		}
+		wsHandler = NewWebSocketHandler(wsParams)
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check if this is a WebSocket upgrade request
+		if graphCtx.EnableSubscriptions && r.Header.Get("Upgrade") == "websocket" {
+			if wsHandler != nil {
+				wsHandler(w, r)
+			} else {
+				http.Error(w, "WebSocket subscriptions not configured", http.StatusServiceUnavailable)
+			}
+			return
+		}
+
 		// Skip validation and sanitization in DEBUG mode
 		if graphCtx.DEBUG {
 			h.ServeHTTP(w, r)

@@ -12,6 +12,7 @@ A modern, secure GraphQL handler for Go with built-in authentication, validation
 - 🛡️ **Security First** - Query depth, complexity, and introspection protection
 - 🧹 **Response Sanitization** - Remove field suggestions from errors
 - 🎭 **Middleware System** - Built-in logging, auth, caching + custom middleware support
+- 🔄 **Real-time Subscriptions** - WebSocket subscriptions with dual protocol support
 - ⚡ **Framework Agnostic** - Works with net/http, Gin, or any framework
 - ⚡ **High Performance** - ~60μs per request, 100k+ RPS capable
 
@@ -812,6 +813,605 @@ func MetricsMiddleware(metrics *prometheus.Registry) graph.FieldMiddleware {
 5. **Measure performance**: Use logging/metrics middleware to track slow resolvers
 6. **Batch database queries**: Use dataloaders to prevent N+1 queries
 
+## GraphQL Subscriptions
+
+Real-time event streaming over WebSocket with type-safe resolvers and middleware support.
+
+### Features
+
+- 🔄 **Real-time Events** - Stream data to clients over WebSocket
+- 🎯 **Type-Safe Resolvers** - Generic subscription builders with compile-time safety
+- 🔌 **Dual Protocol Support** - Works with both `graphql-ws` (modern) and `subscriptions-transport-ws` (legacy)
+- 🏗️ **Fluent Builder API** - Same intuitive API as queries and mutations
+- 🛡️ **Middleware Support** - Apply authentication, logging, and custom middleware
+- 🔍 **Event Filtering** - Filter events before sending to clients
+- 📦 **Pluggable PubSub** - In-memory, Redis, Kafka, or custom backends
+- 🎭 **Field-Level Control** - Custom resolvers and middleware per field
+
+### Quick Start
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "net/http"
+    "time"
+    "github.com/graphql-go/graphql"
+    graph "github.com/paulmanoni/go-graph"
+)
+
+type MessageEvent struct {
+    ID        string    `json:"id"`
+    Content   string    `json:"content"`
+    Author    string    `json:"author"`
+    Timestamp time.Time `json:"timestamp"`
+}
+
+func main() {
+    // Initialize PubSub system
+    pubsub := graph.NewInMemoryPubSub()
+    defer pubsub.Close()
+
+    // Create subscription
+    messageSubscription := graph.NewSubscription[MessageEvent]("messageAdded").
+        WithDescription("Subscribe to new messages").
+        WithArgs(graphql.FieldConfigArgument{
+            "channelID": &graphql.ArgumentConfig{
+                Type: graphql.NewNonNull(graphql.String),
+            },
+        }).
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *MessageEvent, error) {
+            channelID, _ := graph.GetArgString(p, "channelID")
+
+            // Create output channel
+            events := make(chan *MessageEvent, 10)
+
+            // Subscribe to PubSub topic
+            subscription := pubsub.Subscribe(ctx, "messages:"+channelID)
+
+            // Forward events to GraphQL channel
+            go func() {
+                defer close(events)
+                for msg := range subscription {
+                    var event MessageEvent
+                    json.Unmarshal(msg.Data, &event)
+                    events <- &event
+                }
+            }()
+
+            return events, nil
+        }).
+        BuildSubscription()
+
+    // Build GraphQL handler with subscriptions
+    handler := graph.NewHTTP(&graph.GraphContext{
+        SchemaParams: &graph.SchemaBuilderParams{
+            QueryFields:        []graph.QueryField{...},
+            MutationFields:     []graph.MutationField{...},
+            SubscriptionFields: []graph.SubscriptionField{messageSubscription},
+        },
+        PubSub:              pubsub,
+        EnableSubscriptions: true,
+        Playground:          true,
+    })
+
+    http.Handle("/graphql", handler)
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+**Test the subscription:**
+
+```graphql
+subscription {
+  messageAdded(channelID: "general") {
+    id
+    content
+    author
+    timestamp
+  }
+}
+```
+
+### PubSub System
+
+The PubSub interface enables pluggable backends for event distribution:
+
+```go
+type PubSub interface {
+    Publish(ctx context.Context, topic string, data interface{}) error
+    Subscribe(ctx context.Context, topic string) <-chan *Message
+    Unsubscribe(ctx context.Context, subscriptionID string) error
+    Close() error
+}
+```
+
+#### In-Memory PubSub (Development)
+
+Perfect for development and single-instance deployments:
+
+```go
+pubsub := graph.NewInMemoryPubSub()
+defer pubsub.Close()
+
+// Publish events
+ctx := context.Background()
+pubsub.Publish(ctx, "messages:general", &MessageEvent{
+    ID:      "1",
+    Content: "Hello!",
+    Author:  "Alice",
+})
+
+// Subscribe to events
+subscription := pubsub.Subscribe(ctx, "messages:general")
+for msg := range subscription {
+    // Process message
+}
+```
+
+#### Custom PubSub Backends
+
+Implement the `PubSub` interface for Redis, Kafka, or other message brokers:
+
+```go
+type RedisPubSub struct {
+    client *redis.Client
+    // ... implementation
+}
+
+func (r *RedisPubSub) Publish(ctx context.Context, topic string, data interface{}) error {
+    jsonData, _ := json.Marshal(data)
+    return r.client.Publish(ctx, topic, jsonData).Err()
+}
+
+func (r *RedisPubSub) Subscribe(ctx context.Context, topic string) <-chan *graph.Message {
+    // ... implementation
+}
+
+// Use with GraphContext
+handler := graph.NewHTTP(&graph.GraphContext{
+    PubSub: &RedisPubSub{client: redisClient},
+    EnableSubscriptions: true,
+})
+```
+
+### Subscription Resolver API
+
+The `NewSubscription[T]` builder provides a fluent API for creating type-safe subscriptions:
+
+```go
+graph.NewSubscription[EventType]("subscriptionName").
+    WithDescription("Description of the subscription").
+    WithArgs(graphql.FieldConfigArgument{...}).
+    WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *EventType, error) {
+        // Return a channel that emits events
+    }).
+    WithFilter(func(ctx context.Context, data *EventType, p graph.ResolveParams) bool {
+        // Filter events before sending to clients
+        return true
+    }).
+    WithMiddleware(graph.AuthMiddleware("user")).
+    WithFieldResolver("customField", func(p graph.ResolveParams) (interface{}, error) {
+        // Custom resolver for specific fields
+    }).
+    WithFieldMiddleware("sensitiveField", graph.AuthMiddleware("admin")).
+    BuildSubscription()
+```
+
+#### Basic Subscription
+
+```go
+type UserStatusEvent struct {
+    UserID    string    `json:"userID"`
+    Status    string    `json:"status"`
+    Timestamp time.Time `json:"timestamp"`
+}
+
+func userStatusSubscription(pubsub graph.PubSub) graph.SubscriptionField {
+    return graph.NewSubscription[UserStatusEvent]("userStatusChanged").
+        WithDescription("Subscribe to user status changes").
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *UserStatusEvent, error) {
+            events := make(chan *UserStatusEvent, 10)
+            subscription := pubsub.Subscribe(ctx, "user_status")
+
+            go func() {
+                defer close(events)
+                for msg := range subscription {
+                    var event UserStatusEvent
+                    json.Unmarshal(msg.Data, &event)
+                    events <- &event
+                }
+            }()
+
+            return events, nil
+        }).
+        BuildSubscription()
+}
+```
+
+#### With Arguments
+
+```go
+func messageSubscription(pubsub graph.PubSub) graph.SubscriptionField {
+    return graph.NewSubscription[Message]("messageAdded").
+        WithArgs(graphql.FieldConfigArgument{
+            "channelID": &graphql.ArgumentConfig{
+                Type:        graphql.NewNonNull(graphql.String),
+                Description: "Channel to subscribe to",
+            },
+        }).
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Message, error) {
+            channelID, _ := graph.GetArgString(p, "channelID")
+
+            events := make(chan *Message, 10)
+            subscription := pubsub.Subscribe(ctx, "messages:"+channelID)
+
+            go func() {
+                defer close(events)
+                for msg := range subscription {
+                    var message Message
+                    json.Unmarshal(msg.Data, &message)
+                    events <- &message
+                }
+            }()
+
+            return events, nil
+        }).
+        BuildSubscription()
+}
+```
+
+#### With Event Filtering
+
+Filter events based on user permissions or subscription criteria:
+
+```go
+func messageSubscription(pubsub graph.PubSub) graph.SubscriptionField {
+    return graph.NewSubscription[Message]("messageAdded").
+        WithArgs(graphql.FieldConfigArgument{
+            "channelID": &graphql.ArgumentConfig{Type: graphql.String},
+        }).
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Message, error) {
+            // Subscribe to all messages
+            events := make(chan *Message, 10)
+            subscription := pubsub.Subscribe(ctx, "messages")
+
+            go func() {
+                defer close(events)
+                for msg := range subscription {
+                    var message Message
+                    json.Unmarshal(msg.Data, &message)
+                    events <- &message
+                }
+            }()
+
+            return events, nil
+        }).
+        WithFilter(func(ctx context.Context, data *Message, p graph.ResolveParams) bool {
+            // Filter by channel ID
+            channelID, _ := graph.GetArgString(p, "channelID")
+            return data.ChannelID == channelID
+        }).
+        BuildSubscription()
+}
+```
+
+#### With Authentication Middleware
+
+Protect subscriptions with authentication:
+
+```go
+func adminSubscription(pubsub graph.PubSub) graph.SubscriptionField {
+    return graph.NewSubscription[AdminEvent]("adminEvents").
+        WithDescription("Admin-only event stream").
+        WithMiddleware(graph.AuthMiddleware("admin")).
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *AdminEvent, error) {
+            // Only admins reach here
+            events := make(chan *AdminEvent, 10)
+            subscription := pubsub.Subscribe(ctx, "admin_events")
+
+            go func() {
+                defer close(events)
+                for msg := range subscription {
+                    var event AdminEvent
+                    json.Unmarshal(msg.Data, &event)
+                    events <- &event
+                }
+            }()
+
+            return events, nil
+        }).
+        BuildSubscription()
+}
+```
+
+#### With Field-Level Customization
+
+Customize how specific fields are resolved:
+
+```go
+type MessageEvent struct {
+    ID       string `json:"id"`
+    Content  string `json:"content"`
+    AuthorID string `json:"authorID"`
+}
+
+func messageSubscription(pubsub graph.PubSub) graph.SubscriptionField {
+    return graph.NewSubscription[MessageEvent]("messageAdded").
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *MessageEvent, error) {
+            // ... resolver implementation
+        }).
+        WithFieldResolver("author", func(p graph.ResolveParams) (interface{}, error) {
+            // Custom resolver for author field
+            event := p.Source.(MessageEvent)
+            return userService.GetByID(event.AuthorID), nil
+        }).
+        WithFieldMiddleware("content", graph.AuthMiddleware("user")).
+        BuildSubscription()
+}
+```
+
+### WebSocket Configuration
+
+Configure WebSocket behavior through `GraphContext`:
+
+```go
+handler := graph.NewHTTP(&graph.GraphContext{
+    SchemaParams: &graph.SchemaBuilderParams{
+        SubscriptionFields: []graph.SubscriptionField{...},
+    },
+
+    // Enable subscriptions
+    EnableSubscriptions: true,
+
+    // PubSub backend
+    PubSub: pubsub,
+
+    // Optional: Custom WebSocket path (default: auto-detects)
+    WebSocketPath: "/subscriptions",
+
+    // Optional: Custom origin check
+    WebSocketCheckOrigin: func(r *http.Request) bool {
+        origin := r.Header.Get("Origin")
+        return origin == "https://example.com"
+    },
+
+    // Optional: Authentication for WebSocket connections
+    UserDetailsFn: func(token string) (interface{}, error) {
+        return validateAndGetUser(token)
+    },
+})
+```
+
+#### Authentication in Subscriptions
+
+WebSocket authentication works similarly to HTTP:
+
+```go
+handler := graph.NewHTTP(&graph.GraphContext{
+    SchemaParams: &graph.SchemaBuilderParams{
+        SubscriptionFields: []graph.SubscriptionField{...},
+    },
+    EnableSubscriptions: true,
+    PubSub:              pubsub,
+
+    // Extract user details from token
+    UserDetailsFn: func(token string) (interface{}, error) {
+        user, err := validateJWT(token)
+        if err != nil {
+            return nil, err
+        }
+        return user, nil
+    },
+})
+```
+
+**Client sends token during connection initialization:**
+
+```javascript
+const client = new SubscriptionClient('ws://localhost:8080/graphql', {
+  connectionParams: {
+    authorization: 'Bearer <token>',
+  },
+});
+```
+
+**Access user details in subscription resolver:**
+
+```go
+func messageSubscription(pubsub graph.PubSub) graph.SubscriptionField {
+    return graph.NewSubscription[Message]("messageAdded").
+        WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Message, error) {
+            // Get authenticated user
+            var user User
+            if err := graph.GetRootInfo(p, "details", &user); err != nil {
+                return nil, fmt.Errorf("authentication required")
+            }
+
+            // Subscribe to user-specific messages
+            events := make(chan *Message, 10)
+            subscription := pubsub.Subscribe(ctx, "messages:"+user.ID)
+
+            // ... forward events
+
+            return events, nil
+        }).
+        BuildSubscription()
+}
+```
+
+### Publishing Events from Mutations
+
+Trigger subscription events from mutations:
+
+```go
+func sendMessageMutation(pubsub graph.PubSub) graph.MutationField {
+    type SendMessageInput struct {
+        ChannelID string `json:"channelID" graphql:"channelID,required"`
+        Content   string `json:"content" graphql:"content,required"`
+    }
+
+    return graph.NewResolver[Message]("sendMessage").
+        WithInputObject(SendMessageInput{}).
+        WithResolver(func(p graph.ResolveParams) (*Message, error) {
+            var input SendMessageInput
+            graph.GetArg(p, "input", &input)
+
+            // Create message
+            msg := &Message{
+                ID:        uuid.New().String(),
+                Content:   input.Content,
+                ChannelID: input.ChannelID,
+                Timestamp: time.Now(),
+            }
+
+            // Store in database
+            db.Create(msg)
+
+            // Publish to subscribers
+            ctx := context.Background()
+            pubsub.Publish(ctx, "messages:"+input.ChannelID, msg)
+
+            return msg, nil
+        }).
+        BuildMutation()
+}
+```
+
+### Protocol Support
+
+The WebSocket handler supports both modern and legacy protocols:
+
+| Protocol | Support | Client |
+|----------|---------|--------|
+| `graphql-ws` | ✅ Full | Apollo Client 3+, urql |
+| `subscriptions-transport-ws` | ✅ Full | Apollo Client 2, GraphQL Playground |
+
+Both protocols work simultaneously - no configuration needed.
+
+### Production Considerations
+
+#### Connection Limits
+
+Monitor and limit concurrent WebSocket connections:
+
+```go
+var (
+    maxConnections = 10000
+    currentConns   int64
+)
+
+handler := graph.NewHTTP(&graph.GraphContext{
+    EnableSubscriptions: true,
+    WebSocketCheckOrigin: func(r *http.Request) bool {
+        if atomic.LoadInt64(&currentConns) >= int64(maxConnections) {
+            return false
+        }
+        atomic.AddInt64(&currentConns, 1)
+        return true
+    },
+})
+```
+
+#### Event Buffering
+
+Use buffered channels to handle bursts:
+
+```go
+// Good: Buffered channel prevents blocking
+events := make(chan *Message, 100)
+
+// Bad: Unbuffered channel may block publishers
+events := make(chan *Message)
+```
+
+#### Error Handling
+
+Handle errors gracefully in subscription resolvers:
+
+```go
+WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Event, error) {
+    // Validate arguments first
+    channelID, err := graph.GetArgString(p, "channelID")
+    if err != nil {
+        return nil, fmt.Errorf("channelID required")
+    }
+
+    // Create subscription
+    events := make(chan *Event, 10)
+    subscription := pubsub.Subscribe(ctx, "events:"+channelID)
+
+    go func() {
+        defer close(events)
+        for msg := range subscription {
+            var event Event
+            if err := json.Unmarshal(msg.Data, &event); err != nil {
+                log.Printf("Failed to unmarshal event: %v", err)
+                continue // Skip malformed events
+            }
+            events <- &event
+        }
+    }()
+
+    return events, nil
+})
+```
+
+#### Graceful Shutdown
+
+Close all connections during shutdown:
+
+```go
+func main() {
+    pubsub := graph.NewInMemoryPubSub()
+
+    handler := graph.NewHTTP(&graph.GraphContext{
+        PubSub:              pubsub,
+        EnableSubscriptions: true,
+    })
+
+    server := &http.Server{Addr: ":8080", Handler: handler}
+
+    // Graceful shutdown
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+    go func() {
+        <-sigChan
+        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
+
+        // Close PubSub (closes all subscriptions)
+        pubsub.Close()
+
+        // Shutdown HTTP server
+        server.Shutdown(ctx)
+    }()
+
+    server.ListenAndServe()
+}
+```
+
+### Complete Example
+
+See [examples/subscription](./examples/subscription) for a complete working example with:
+- Message subscriptions with channel filtering
+- User status change subscriptions
+- Authentication and authorization
+- Mutations that trigger subscription events
+- Background event simulator
+
+Run the example:
+
+```bash
+cd examples/subscription
+go run main.go
+```
+
+Then test subscriptions in GraphQL Playground at http://localhost:8080/graphql
+
 ## Framework Integration
 
 ### With Gin
@@ -896,8 +1496,9 @@ Creates a standard HTTP handler with validation and sanitization support.
 
 ```go
 type SchemaBuilderParams struct {
-    QueryFields    []QueryField
-    MutationFields []MutationField
+    QueryFields        []QueryField
+    MutationFields     []MutationField
+    SubscriptionFields []SubscriptionField  // Optional: Real-time subscriptions
 }
 ```
 
@@ -906,6 +1507,7 @@ type SchemaBuilderParams struct {
 See the [examples](./examples) directory for complete working examples:
 
 - `main.go` - Full example with authentication
+- `subscription/main.go` - Real-time subscriptions with WebSocket
 
 ## Performance Benchmarks
 
@@ -1121,7 +1723,6 @@ This package may not be suitable if:
 - You need sub-10 μs total latency (extremely rare requirement)
 - You're running on severely resource-constrained environments (embedded systems)
 - You need custom validation rules beyond depth/complexity/aliases
-- You require subscription support (this package focuses on queries/mutations)
 
 ### Conclusion
 

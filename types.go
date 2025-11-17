@@ -54,6 +54,23 @@ type GraphContext struct {
 	// If nil and Schema is also nil, defaults to hello world query/mutation
 	SchemaParams *SchemaBuilderParams
 
+	// PubSub: PubSub system for subscriptions (optional, only needed for subscriptions)
+	// Use NewInMemoryPubSub() for development or RedisPubSub for production
+	PubSub PubSub
+
+	// EnableSubscriptions: Enable WebSocket support for GraphQL subscriptions
+	// Default: false (subscriptions disabled)
+	// Requires PubSub to be configured
+	EnableSubscriptions bool
+
+	// WebSocketPath: Path for WebSocket endpoint (default: same as HTTP endpoint)
+	// If not set, WebSocket connections will be handled on the same path as HTTP
+	WebSocketPath string
+
+	// WebSocketCheckOrigin: Custom function to check WebSocket upgrade origin
+	// If not provided, all origins are allowed (only use in development!)
+	WebSocketCheckOrigin func(r *http.Request) bool
+
 	// Pretty: Pretty-print JSON responses
 	Pretty bool
 

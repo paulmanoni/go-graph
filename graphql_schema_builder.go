@@ -26,13 +26,18 @@ type SchemaBuilderParams struct {
 
 	// MutationFields: List of mutation fields to include in the schema
 	MutationFields []MutationField `group:"mutation_fields"`
+
+	// SubscriptionFields: List of subscription fields to include in the schema
+	// Requires WebSocket support and PubSub configuration
+	SubscriptionFields []SubscriptionField `group:"subscription_fields"`
 }
 
 // SchemaBuilder builds GraphQL schemas from QueryFields and MutationFields.
 // Use NewSchemaBuilder to create an instance and Build() to generate the schema.
 type SchemaBuilder struct {
-	queryFields    []QueryField
-	mutationFields []MutationField
+	queryFields        []QueryField
+	mutationFields     []MutationField
+	subscriptionFields []SubscriptionField
 }
 
 // NewSchemaBuilder creates a new schema builder with the provided query and mutation fields.
@@ -47,8 +52,9 @@ type SchemaBuilder struct {
 //	schema, err := builder.Build()
 func NewSchemaBuilder(params SchemaBuilderParams) *SchemaBuilder {
 	return &SchemaBuilder{
-		queryFields:    params.QueryFields,
-		mutationFields: params.MutationFields,
+		queryFields:        params.QueryFields,
+		mutationFields:     params.MutationFields,
+		subscriptionFields: params.SubscriptionFields,
 	}
 }
 
@@ -75,6 +81,11 @@ func (sb *SchemaBuilder) Build() (graphql.Schema, error) {
 		mutationFields[field.Name()] = field.Serve()
 	}
 
+	subscriptionFields := graphql.Fields{}
+	for _, field := range sb.subscriptionFields {
+		subscriptionFields[field.Name()] = field.Serve()
+	}
+
 	schemaConfig := graphql.SchemaConfig{}
 
 	if len(queryFields) > 0 {
@@ -88,6 +99,13 @@ func (sb *SchemaBuilder) Build() (graphql.Schema, error) {
 		schemaConfig.Mutation = graphql.NewObject(graphql.ObjectConfig{
 			Name:   "Mutation",
 			Fields: mutationFields,
+		})
+	}
+
+	if len(subscriptionFields) > 0 {
+		schemaConfig.Subscription = graphql.NewObject(graphql.ObjectConfig{
+			Name:   "Subscription",
+			Fields: subscriptionFields,
 		})
 	}
 
