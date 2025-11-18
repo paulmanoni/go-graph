@@ -778,17 +778,17 @@ func TestNewHTTP_CustomRootObject(t *testing.T) {
 // Test Middleware
 
 func TestLoggingMiddleware(t *testing.T) {
-	resolver := func(p graphql.ResolveParams) (interface{}, error) {
+	resolver := func(p ResolveParams) (interface{}, error) {
 		return "test result", nil
 	}
 
 	wrapped := LoggingMiddleware(resolver)
 
-	params := graphql.ResolveParams{
+	params := ResolveParams(graphql.ResolveParams{
 		Info: graphql.ResolveInfo{
 			FieldName: "testField",
 		},
-	}
+	})
 
 	result, err := wrapped(params)
 	if err != nil {

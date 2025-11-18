@@ -303,3 +303,114 @@ func hasIntrospectionInSelectionSet(selectionSet *ast.SelectionSet) bool {
 	}
 	return false
 }
+
+// ExecuteValidationRules executes a set of validation rules against a GraphQL query.
+// This is the modern validation system that supports custom rules.
+//
+// Parameters:
+//   - queryString: The GraphQL query to validate
+//   - schema: The GraphQL schema
+//   - rules: The validation rules to execute
+//   - authCtx: Authentication context (can be nil if not needed)
+//   - options: Validation options (can be nil for defaults)
+//
+// Returns:
+//   - nil if validation passes
+//   - *ValidationError for single rule failure
+//   - *MultiValidationError for multiple rule failures
+//
+// Example:
+//
+//	rules := []ValidationRule{
+//	    NewMaxDepthRule(10),
+//	    NewRequireAuthRule("mutation"),
+//	    NewRoleRules(AdminOnlyFields),
+//	}
+//	err := ExecuteValidationRules(query, schema, rules, authCtx, nil)
+func ExecuteValidationRules(
+	queryString string,
+	schema *graphql.Schema,
+	rules []ValidationRule,
+	userDetails interface{},
+	options *ValidationOptions,
+) error {
+	// Handle empty query
+	if queryString == "" {
+		return nil
+	}
+
+	// Handle nil rules
+	if len(rules) == 0 {
+		return nil
+	}
+
+	// Set default options
+	if options == nil {
+		options = &ValidationOptions{
+			StopOnFirstError: false,
+			SkipInDebug:      true,
+		}
+	}
+
+	// Parse the query string into an AST
+	src := source.NewSource(&source.Source{
+		Body: []byte(queryString),
+		Name: "GraphQL request",
+	})
+
+	doc, err := parser.Parse(parser.ParseParams{
+		Source: src,
+	})
+	if err != nil {
+		// If parsing fails, let the GraphQL handler deal with it
+		return nil
+	}
+
+	// Create validation context
+	ctx := &ValidationContext{
+		Document:    doc,
+		Schema:      schema,
+		UserDetails: userDetails,
+	}
+
+	// Execute all rules
+	var errors []*ValidationError
+	for _, rule := range rules {
+		// Skip disabled rules
+		if !rule.Enabled() {
+			continue
+		}
+
+		// Execute rule
+		if err := rule.Validate(ctx); err != nil {
+			if validationErr, ok := err.(*ValidationError); ok {
+				errors = append(errors, validationErr)
+			} else {
+				// Wrap non-ValidationError errors
+				errors = append(errors, &ValidationError{
+					Rule:    rule.Name(),
+					Message: err.Error(),
+				})
+			}
+
+			// Stop on first error if configured
+			if options.StopOnFirstError {
+				break
+			}
+		}
+	}
+
+	// Return appropriate error type
+	if len(errors) == 0 {
+		return nil
+	} else if len(errors) == 1 {
+		return errors[0]
+	} else {
+		// Convert []*ValidationError to []error
+		errs := make([]error, len(errors))
+		for i, e := range errors {
+			errs[i] = e
+		}
+		return &MultiValidationError{Errors: errs}
+	}
+}

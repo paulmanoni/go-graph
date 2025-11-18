@@ -40,6 +40,14 @@ func ExtractBearerToken(r *http.Request) string {
 	return ""
 }
 
+// extractToken extracts token using custom extractor or falls back to Bearer token extraction
+func extractToken(r *http.Request, extractorFn func(*http.Request) string) string {
+	if extractorFn != nil {
+		return extractorFn(r)
+	}
+	return ExtractBearerToken(r)
+}
+
 // getDefaultHelloQuery creates a default hello world query
 func getDefaultHelloQuery() QueryField {
 	return NewResolver[string]("hello").
@@ -399,16 +407,76 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 		}
 
 		// Validate query if enabled
-		if graphCtx.EnableValidation && query != "" {
-			if err := ValidateGraphQLQuery(query, schema); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"errors": []map[string]interface{}{
-						{"message": err.Error()},
-					},
-				})
-				return
+		if query != "" {
+			// Determine which validation rules to use
+			var rules []ValidationRule
+			if len(graphCtx.ValidationRules) > 0 {
+				// Use custom validation rules (takes precedence)
+				rules = graphCtx.ValidationRules
+			} else if graphCtx.EnableValidation {
+				// Fall back to default security rules for backward compatibility
+				rules = SecurityRules
+			}
+
+			// Execute validation if rules are configured
+			if len(rules) > 0 {
+				// Get user details from UserDetailsFn if provided
+				var userDetails interface{}
+				if graphCtx.UserDetailsFn != nil {
+					token := extractToken(r, graphCtx.TokenExtractorFn)
+					if token != "" {
+						userDetails, _ = graphCtx.UserDetailsFn(token)
+						// Ignore errors - validation rules will handle unauthenticated state
+					}
+				}
+
+				// Execute validation rules
+				if err := ExecuteValidationRules(query, schema, rules, userDetails, graphCtx.ValidationOptions); err != nil{
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+
+					// Format error response based on error type
+					var errorResponse map[string]interface{}
+					if multiErr, ok := err.(*MultiValidationError); ok {
+						// Multiple validation errors
+						var errors []map[string]interface{}
+						for _, e := range multiErr.Errors {
+							if validationErr, ok := e.(*ValidationError); ok {
+								errors = append(errors, map[string]interface{}{
+									"message": validationErr.Error(),
+									"rule":    validationErr.Rule,
+								})
+							} else {
+								errors = append(errors, map[string]interface{}{
+									"message": e.Error(),
+								})
+							}
+						}
+						errorResponse = map[string]interface{}{
+							"errors": errors,
+						}
+					} else if validationErr, ok := err.(*ValidationError); ok {
+						// Single validation error
+						errorResponse = map[string]interface{}{
+							"errors": []map[string]interface{}{
+								{
+									"message": validationErr.Message,
+									"rule":    validationErr.Rule,
+								},
+							},
+						}
+					} else {
+						// Generic error
+						errorResponse = map[string]interface{}{
+							"errors": []map[string]interface{}{
+								{"message": err.Error()},
+							},
+						}
+					}
+
+					_ = json.NewEncoder(w).Encode(errorResponse)
+					return
+				}
 			}
 		}
 

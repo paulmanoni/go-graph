@@ -100,7 +100,24 @@ type GraphContext struct {
 	// EnableValidation: Enable query validation (depth, complexity, introspection checks)
 	// Default: false (validation disabled)
 	// When enabled: Max depth=10, Max aliases=4, Max complexity=200, Introspection blocked
+	// DEPRECATED: Use ValidationRules for more control
 	EnableValidation bool
+
+	// ValidationRules: Custom validation rules (takes precedence over EnableValidation)
+	// Set to nil or empty slice to disable validation
+	// Example:
+	//   ValidationRules: []ValidationRule{
+	//       NewMaxDepthRule(10),
+	//       NewRequireAuthRule("mutation"),
+	//       NewRoleRules(map[string][]string{
+	//           "deleteUser": {"admin"},
+	//       }),
+	//   }
+	ValidationRules []ValidationRule
+
+	// ValidationOptions: Configure validation behavior (optional)
+	// Default: StopOnFirstError=false, SkipInDebug=true
+	ValidationOptions *ValidationOptions
 
 	// EnableSanitization: Enable response sanitization (removes field suggestions from errors)
 	// Default: false (sanitization disabled)

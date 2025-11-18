@@ -433,16 +433,16 @@ func BenchmarkResponseWriterWrapper_SanitizeAndWrite(b *testing.B) {
 
 // Benchmark Middleware
 func BenchmarkLoggingMiddleware(b *testing.B) {
-	resolver := func(p graphql.ResolveParams) (interface{}, error) {
+	resolver := func(p ResolveParams) (interface{}, error) {
 		return "test", nil
 	}
 
 	wrapped := LoggingMiddleware(resolver)
-	params := graphql.ResolveParams{
+	params := ResolveParams(graphql.ResolveParams{
 		Info: graphql.ResolveInfo{
 			FieldName: "testField",
 		},
-	}
+	})
 
 	b.ResetTimer()
 	// Redirect stdout to avoid benchmark noise
