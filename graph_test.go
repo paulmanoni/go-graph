@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/graphql-go/graphql"
 )
@@ -1392,5 +1393,310 @@ func TestNewArgsResolver_NilContext(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+// Test Embedded Struct Support
+
+func TestGenerateGraphQLFields_EmbeddedStruct(t *testing.T) {
+	type BaseEntity struct {
+		ID        string     `json:"id"`
+		CreatedAt time.Time  `json:"created_at"`
+		UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	fields := GenerateGraphQLFields[Product]()
+
+	expectedFields := []string{"id", "created_at", "updated_at", "name", "price"}
+	for _, fieldName := range expectedFields {
+		if _, exists := fields[fieldName]; !exists {
+			t.Errorf("Expected field %s to exist", fieldName)
+		}
+	}
+
+	if len(fields) != len(expectedFields) {
+		t.Errorf("Expected %d fields, got %d", len(expectedFields), len(fields))
+	}
+}
+
+func TestGenerateGraphQLFields_MultipleEmbedding(t *testing.T) {
+	type Timestamped struct {
+		CreatedAt time.Time  `json:"created_at"`
+		UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	}
+
+	type Identified struct {
+		ID string `json:"id"`
+	}
+
+	type Article struct {
+		Identified
+		Timestamped
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+
+	fields := GenerateGraphQLFields[Article]()
+
+	expectedFields := []string{"id", "created_at", "updated_at", "title", "content"}
+	for _, fieldName := range expectedFields {
+		if _, exists := fields[fieldName]; !exists {
+			t.Errorf("Expected field %s to exist", fieldName)
+		}
+	}
+}
+
+func TestGenerateGraphQLFields_PointerEmbedding(t *testing.T) {
+	type Address struct {
+		Street string `json:"street"`
+		City   string `json:"city"`
+	}
+
+	type Company struct {
+		*Address
+		Name string `json:"name"`
+	}
+
+	fields := GenerateGraphQLFields[Company]()
+
+	expectedFields := []string{"street", "city", "name"}
+	for _, fieldName := range expectedFields {
+		if _, exists := fields[fieldName]; !exists {
+			t.Errorf("Expected field %s to exist", fieldName)
+		}
+	}
+}
+
+func TestGenerateGraphQLFields_FieldOverride(t *testing.T) {
+	type BaseEntity struct {
+		ID string `json:"id"`
+	}
+
+	type OverrideTest struct {
+		BaseEntity
+		ID string `json:"id"` // This should override BaseEntity.ID
+	}
+
+	fields := GenerateGraphQLFields[OverrideTest]()
+
+	if _, exists := fields["id"]; !exists {
+		t.Error("Expected id field to exist")
+	}
+
+	// Should only have one id field (the override)
+	idCount := 0
+	for name := range fields {
+		if name == "id" {
+			idCount++
+		}
+	}
+
+	if idCount != 1 {
+		t.Errorf("Expected exactly 1 id field, got %d", idCount)
+	}
+}
+
+func TestFieldResolver_EmbeddedFields(t *testing.T) {
+	type BaseEntity struct {
+		ID        string     `json:"id"`
+		CreatedAt time.Time  `json:"created_at"`
+		UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	fields := GenerateGraphQLFields[Product]()
+
+	now := time.Now()
+	product := Product{
+		BaseEntity: BaseEntity{
+			ID:        "123",
+			CreatedAt: now,
+			UpdatedAt: &now,
+		},
+		Name:  "Test Product",
+		Price: 99.99,
+	}
+
+	// Test ID field resolver
+	if idField, exists := fields["id"]; exists {
+		result, err := idField.Resolve(graphql.ResolveParams{
+			Source: product,
+		})
+		if err != nil {
+			t.Errorf("ID field resolver error: %v", err)
+		}
+		if result != "123" {
+			t.Errorf("Expected ID '123', got %v", result)
+		}
+	}
+
+	// Test Name field resolver
+	if nameField, exists := fields["name"]; exists {
+		result, err := nameField.Resolve(graphql.ResolveParams{
+			Source: product,
+		})
+		if err != nil {
+			t.Errorf("Name field resolver error: %v", err)
+		}
+		if result != "Test Product" {
+			t.Errorf("Expected Name 'Test Product', got %v", result)
+		}
+	}
+
+	// Test Price field resolver
+	if priceField, exists := fields["price"]; exists {
+		result, err := priceField.Resolve(graphql.ResolveParams{
+			Source: product,
+		})
+		if err != nil {
+			t.Errorf("Price field resolver error: %v", err)
+		}
+		if result != 99.99 {
+			t.Errorf("Expected Price 99.99, got %v", result)
+		}
+	}
+}
+
+func TestGenerateInputObject_EmbeddedStruct(t *testing.T) {
+	type BaseEntity struct {
+		ID        string     `json:"id"`
+		CreatedAt time.Time  `json:"created_at"`
+		UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	input := GenerateInputObject[Product]("ProductInput")
+
+	if input.Name() != "ProductInput" {
+		t.Errorf("Expected input object name 'ProductInput', got %s", input.Name())
+	}
+
+	fields := input.Fields()
+	expectedFields := []string{"id", "created_at", "updated_at", "name", "price"}
+	for _, fieldName := range expectedFields {
+		if _, exists := fields[fieldName]; !exists {
+			t.Errorf("Expected input field %s to exist", fieldName)
+		}
+	}
+}
+
+func TestGenerateArgsFromStruct_EmbeddedStruct(t *testing.T) {
+	type BaseEntity struct {
+		ID        string     `json:"id"`
+		CreatedAt time.Time  `json:"created_at"`
+		UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	args := GenerateArgsFromStruct[Product]()
+
+	expectedArgs := []string{"id", "created_at", "updated_at", "name", "price"}
+	for _, argName := range expectedArgs {
+		if _, exists := args[argName]; !exists {
+			t.Errorf("Expected argument %s to exist", argName)
+		}
+	}
+}
+
+func TestGenerateGraphQLFields_NestedEmbedding(t *testing.T) {
+	type Level1 struct {
+		Field1 string `json:"field1"`
+	}
+
+	type Level2 struct {
+		Level1
+		Field2 string `json:"field2"`
+	}
+
+	type Level3 struct {
+		Level2
+		Field3 string `json:"field3"`
+	}
+
+	fields := GenerateGraphQLFields[Level3]()
+
+	expectedFields := []string{"field1", "field2", "field3"}
+	for _, fieldName := range expectedFields {
+		if _, exists := fields[fieldName]; !exists {
+			t.Errorf("Expected field %s to exist in nested embedding", fieldName)
+		}
+	}
+
+	if len(fields) != len(expectedFields) {
+		t.Errorf("Expected %d fields, got %d", len(expectedFields), len(fields))
+	}
+}
+
+func TestGenerateGraphQLFields_MixedEmbedding(t *testing.T) {
+	type BaseEntity struct {
+		ID string `json:"id"`
+	}
+
+	type Metadata struct {
+		Tags []string `json:"tags"`
+	}
+
+	type Document struct {
+		BaseEntity
+		Metadata
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+
+	fields := GenerateGraphQLFields[Document]()
+
+	expectedFields := []string{"id", "tags", "title", "body"}
+	for _, fieldName := range expectedFields {
+		if _, exists := fields[fieldName]; !exists {
+			t.Errorf("Expected field %s to exist in mixed embedding", fieldName)
+		}
+	}
+}
+
+func TestConcurrentEmbeddedFieldGeneration(t *testing.T) {
+	type BaseEntity struct {
+		ID        string    `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name string `json:"name"`
+	}
+
+	done := make(chan bool)
+
+	for i := 0; i < 10; i++ {
+		go func() {
+			_ = GenerateGraphQLFields[Product]()
+			_ = GenerateGraphQLObject[Product]("Product")
+			_ = GenerateInputObject[Product]("ProductInput")
+			done <- true
+		}()
+	}
+
+	for i := 0; i < 10; i++ {
+		<-done
 	}
 }

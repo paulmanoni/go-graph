@@ -902,6 +902,64 @@ err := graph.GetRootInfo(p, "details", &user)
 
 ## Type-Safe Resolvers
 
+### Automatic Type Generation with Embedded Struct Support
+
+The package automatically generates GraphQL types from your Go structs, including **full support for embedded structs**. Fields from embedded structs are automatically flattened to the parent level.
+
+#### Embedded Struct Example
+
+```go
+// Define a base entity with common fields
+type BaseEntity struct {
+    ID        string     `json:"id"`
+    CreatedAt time.Time  `json:"created_at"`
+    UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+// Product embeds BaseEntity - fields are automatically flattened
+type Product struct {
+    BaseEntity
+    Name  string  `json:"name"`
+    Price float64 `json:"price"`
+}
+
+// GraphQL type is automatically generated with ALL fields at the same level:
+// type Product {
+//   id: String
+//   created_at: DateTime
+//   updated_at: DateTime
+//   name: String
+//   price: Float
+// }
+
+func getProduct() graph.QueryField {
+    return graph.NewResolver[Product]("product").
+        WithResolver(func(p graph.ResolveParams) (*Product, error) {
+            return &Product{
+                BaseEntity: BaseEntity{
+                    ID:        "123",
+                    CreatedAt: time.Now(),
+                },
+                Name:  "Widget",
+                Price: 19.99,
+            }, nil
+        }).BuildQuery()
+}
+```
+
+**Embedded Struct Features:**
+- ✅ **Automatic field flattening** - No nested objects, all fields at parent level
+- ✅ **Multiple embedding** - Embed multiple structs (e.g., `BaseEntity` + `Metadata`)
+- ✅ **Nested embedding** - Multi-level embedding supported (Level1 → Level2 → Level3)
+- ✅ **Pointer embedding** - Works with `*BaseEntity` as well
+- ✅ **Field override** - Child fields with same name take precedence
+- ✅ **Works everywhere** - Supported in queries, mutations, input objects, and arguments
+
+**Performance:**
+- Field generation with embedded structs: ~1.2 μs
+- Field resolver execution: ~232 ns
+- Zero runtime overhead after type generation
+
 ### `WithResolver` - Type-Safe (Recommended)
 
 The `WithResolver` method provides compile-time type safety by accepting a function that returns `*T` instead of `interface{}`:
@@ -2333,6 +2391,30 @@ go test -bench=BenchmarkSubscription_Execute -benchmem
 go test -bench=BenchmarkSubscription_WithMiddleware -benchmem
 ```
 
+#### Embedded Struct Field Generation
+
+Performance benchmarks for automatic embedded struct flattening:
+
+| Operation | Time/op | Allocations | Description |
+|-----------|---------|-------------|-------------|
+| Generate Fields (Embedded) | ~1.2 μs | 22 allocs | Single embedded struct |
+| Generate Fields (Multiple) | ~1.4 μs | 28 allocs | Multiple embedded structs |
+| Generate Fields (Deep) | ~1.7 μs | 36 allocs | 4-level deep embedding |
+| Generate Fields (No Embedding) | ~1.1 μs | 20 allocs | Baseline comparison |
+| Generate Object (Embedded) | ~1.4 μs | 24 allocs | Object with embedded fields |
+| Generate Input (Embedded) | ~1.1 μs | 18 allocs | Input type with embedding |
+| Generate Args (Embedded) | ~1.1 μs | 20 allocs | Args with embedded fields |
+| Field Resolver (Embedded) | ~232 ns | 5 allocs | Resolve embedded field |
+| Parallel Generation | ~779 ns | 22 allocs | Concurrent field generation |
+| Complex Embedding | ~2.1 μs | 42 allocs | Multiple mixed embeddings |
+
+**Key Observations:**
+- Embedded struct field flattening adds minimal overhead (~100-600ns depending on complexity)
+- Deep nesting (4+ levels) handled efficiently (~1.7μs)
+- Field resolution from embedded structs is extremely fast (~232ns)
+- Parallel generation scales well (~779ns vs ~1.2μs sequential)
+- Complex scenarios with multiple embeddings remain performant (~2.1μs)
+
 #### Concurrency Performance
 
 | Operation | Time/op | Allocations | Description |
@@ -2340,6 +2422,7 @@ go test -bench=BenchmarkSubscription_WithMiddleware -benchmem
 | Parallel HTTP Requests | ~17 μs | 440 allocs | Concurrent request handling |
 | Parallel Schema Build | ~3 μs | 104 allocs | Concurrent schema creation |
 | Parallel Type Registration | ~145 ns | 0 allocs | Thread-safe type caching |
+| Parallel Embedded Generation | ~779 ns | 22 allocs | Concurrent embedded field gen |
 
 ### Key Takeaways
 

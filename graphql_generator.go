@@ -64,6 +64,24 @@ func (g *FieldGenerator[T]) generateFields(t reflect.Type) graphql.Fields {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 
+		// Handle embedded (anonymous) fields by flattening them
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// Recursively get fields from embedded struct
+			embeddedFields := g.generateFields(embeddedType)
+			for name, embeddedField := range embeddedFields {
+				// Only add if not already present (child fields take precedence)
+				if _, exists := fields[name]; !exists {
+					fields[name] = embeddedField
+				}
+			}
+			continue
+		}
+
 		if field.PkgPath != "" {
 			continue
 		}
@@ -283,6 +301,24 @@ func (g *FieldGenerator[T]) generateInputFields(t reflect.Type) graphql.InputObj
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 
+		// Handle embedded (anonymous) fields by flattening them
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// Recursively get fields from embedded struct
+			embeddedFields := g.generateInputFields(embeddedType)
+			for name, embeddedField := range embeddedFields {
+				// Only add if not already present (child fields take precedence)
+				if _, exists := fields[name]; !exists {
+					fields[name] = embeddedField
+				}
+			}
+			continue
+		}
+
 		if field.PkgPath != "" {
 			continue
 		}
@@ -447,6 +483,88 @@ func GenerateArgsFromStruct[T any]() graphql.FieldConfigArgument {
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
+
+		// Handle embedded (anonymous) fields by flattening them
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// Recursively process embedded struct fields
+			embeddedGen := NewFieldGenerator[T]()
+			embeddedArgs := processStructArgs(embeddedGen, embeddedType)
+			for name, embeddedArg := range embeddedArgs {
+				// Only add if not already present (child fields take precedence)
+				if _, exists := args[name]; !exists {
+					args[name] = embeddedArg
+				}
+			}
+			continue
+		}
+
+		if field.PkgPath != "" {
+			continue
+		}
+
+		fieldName := gen.getFieldName(field)
+		if fieldName == "-" {
+			continue
+		}
+
+		graphqlType := gen.getInputType(field.Type, field)
+		if graphqlType == nil {
+			continue
+		}
+
+		description := field.Tag.Get("description")
+		defaultValue := field.Tag.Get("default")
+
+		argConfig := &graphql.ArgumentConfig{
+			Type:        graphqlType,
+			Description: description,
+		}
+
+		if defaultValue != "" {
+			argConfig.DefaultValue = defaultValue
+		}
+
+		args[fieldName] = argConfig
+	}
+
+	return args
+}
+
+// Helper function to process struct fields for args
+func processStructArgs[T any](gen *FieldGenerator[T], t reflect.Type) graphql.FieldConfigArgument {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return graphql.FieldConfigArgument{}
+	}
+
+	args := graphql.FieldConfigArgument{}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		// Handle embedded fields recursively
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			embeddedArgs := processStructArgs(gen, embeddedType)
+			for name, embeddedArg := range embeddedArgs {
+				if _, exists := args[name]; !exists {
+					args[name] = embeddedArg
+				}
+			}
+			continue
+		}
 
 		if field.PkgPath != "" {
 			continue

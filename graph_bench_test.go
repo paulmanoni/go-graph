@@ -972,3 +972,231 @@ func BenchmarkMapArgsToStruct_Nested(b *testing.B) {
 		_ = mapArgsToStruct(args, &messageArgs)
 	}
 }
+
+// Benchmark Embedded Struct Field Generation
+func BenchmarkGenerateGraphQLFields_EmbeddedStruct(b *testing.B) {
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateGraphQLFields[Product]()
+	}
+}
+
+func BenchmarkGenerateGraphQLFields_MultipleEmbedding(b *testing.B) {
+	type Timestamped struct {
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Identified struct {
+		ID string `json:"id"`
+	}
+
+	type Article struct {
+		Identified
+		Timestamped
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateGraphQLFields[Article]()
+	}
+}
+
+func BenchmarkGenerateGraphQLFields_DeepEmbedding(b *testing.B) {
+	type Level1 struct {
+		Field1 string `json:"field1"`
+	}
+
+	type Level2 struct {
+		Level1
+		Field2 string `json:"field2"`
+	}
+
+	type Level3 struct {
+		Level2
+		Field3 string `json:"field3"`
+	}
+
+	type Level4 struct {
+		Level3
+		Field4 string `json:"field4"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateGraphQLFields[Level4]()
+	}
+}
+
+func BenchmarkGenerateGraphQLFields_NoEmbedding(b *testing.B) {
+	type Product struct {
+		ID        string  `json:"id"`
+		CreatedAt string  `json:"created_at"`
+		UpdatedAt string  `json:"updated_at,omitempty"`
+		Name      string  `json:"name"`
+		Price     float64 `json:"price"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateGraphQLFields[Product]()
+	}
+}
+
+func BenchmarkGenerateGraphQLObject_EmbeddedStruct(b *testing.B) {
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateGraphQLObject[Product]("Product")
+	}
+}
+
+func BenchmarkGenerateInputObject_EmbeddedStruct(b *testing.B) {
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateInputObject[Product]("ProductInput")
+	}
+}
+
+func BenchmarkGenerateArgsFromStruct_EmbeddedStruct(b *testing.B) {
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateArgsFromStruct[Product]()
+	}
+}
+
+func BenchmarkFieldResolver_EmbeddedFields(b *testing.B) {
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	fields := GenerateGraphQLFields[Product]()
+	product := Product{
+		BaseEntity: BaseEntity{
+			ID:        "123",
+			CreatedAt: "2024-01-01",
+			UpdatedAt: "2024-01-02",
+		},
+		Name:  "Test Product",
+		Price: 99.99,
+	}
+
+	idField := fields["id"]
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = idField.Resolve(graphql.ResolveParams{
+			Source: product,
+		})
+	}
+}
+
+func BenchmarkGenerateGraphQLFields_EmbeddedStruct_Parallel(b *testing.B) {
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Product struct {
+		BaseEntity
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = GenerateGraphQLFields[Product]()
+		}
+	})
+}
+
+func BenchmarkGenerateGraphQLFields_ComplexEmbedding(b *testing.B) {
+	type Address struct {
+		Street  string `json:"street"`
+		City    string `json:"city"`
+		Country string `json:"country"`
+	}
+
+	type Contact struct {
+		Email string `json:"email"`
+		Phone string `json:"phone"`
+	}
+
+	type BaseEntity struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}
+
+	type Organization struct {
+		BaseEntity
+		Address
+		Contact
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GenerateGraphQLFields[Organization]()
+	}
+}
