@@ -173,11 +173,15 @@ func (g *FieldGenerator[T]) getBaseGraphQLType(t reflect.Type, objectTypeName *s
 		} else if t == reflect.TypeOf(JSONTime{}) {
 			return DateTime
 		}
-		nameObject := ""
-		if g.objectTypeName != nil {
-			nameObject = fmt.Sprintf("%s_%s", *g.objectTypeName, t.Name())
-		} else {
-			nameObject = t.Name()
+		// Use just the type name for named structs (not anonymous)
+		// This ensures consistent type names across the schema
+		// Anonymous structs (t.Name() == "") get prefixed with parent type name
+		nameObject := t.Name()
+		if nameObject == "" && g.objectTypeName != nil {
+			// Only prefix anonymous structs with parent type name
+			nameObject = fmt.Sprintf("%s_Anonymous", *g.objectTypeName)
+		} else if nameObject == "" {
+			nameObject = "Anonymous"
 		}
 		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
 			elemType := g.getBaseGraphQLType(t.Elem(), objectTypeName)
@@ -561,7 +565,7 @@ func processStructArgs[T any](gen *FieldGenerator[T], t reflect.Type) graphql.Fi
 				embeddedType = embeddedType.Elem()
 			}
 
-			embeddedArgs := processStructArgs(gen, embeddedType)
+			embeddedArgs := processStructArgs[T](gen, embeddedType)
 			for name, embeddedArg := range embeddedArgs {
 				if _, exists := args[name]; !exists {
 					args[name] = embeddedArg
