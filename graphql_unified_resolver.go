@@ -1148,7 +1148,6 @@ func (r *UnifiedResolver[T]) getScalarType(t reflect.Type) graphql.Output {
 // Internal Generation Methods
 func (r *UnifiedResolver[T]) generateObjectTypeWithOverrides() *graphql.Object {
 	// Check if type already exists in registry
-
 	typeRegistryMu.RLock()
 	if existingType, exists := typeRegistry[r.objectName]; exists {
 		typeRegistryMu.RUnlock()
@@ -1156,12 +1155,13 @@ func (r *UnifiedResolver[T]) generateObjectTypeWithOverrides() *graphql.Object {
 	}
 	typeRegistryMu.RUnlock()
 
-	// Create new type
+	// Create new type - we need to register it BEFORE generating fields
+	// to avoid deadlocks with recursive types
 	typeRegistryMu.Lock()
-	defer typeRegistryMu.Unlock()
 
 	// Double-check in case another goroutine created it
 	if existingType, exists := typeRegistry[r.objectName]; exists {
+		typeRegistryMu.Unlock()
 		return existingType
 	}
 
@@ -1174,69 +1174,81 @@ func (r *UnifiedResolver[T]) generateObjectTypeWithOverrides() *graphql.Object {
 		typeToUse = typeToUse.Elem()
 	}
 
-	// Check if this is a wrapper type and handle it specially
-	var baseFields graphql.Fields
-	if typeToUse != nil && gen.isWrapperType(typeToUse) {
-		// Create a wrapper object that handles the Data field safely
-		wrapperObj := gen.createWrapperObject(typeToUse, r.objectName)
-		// Use the wrapper object directly since we just need its field definitions
-		// We'll create our own type later but use the wrapper's field definitions
-		fieldDefinitionMap := wrapperObj.Fields()
-		baseFields = make(graphql.Fields)
-		for name, fieldDef := range fieldDefinitionMap {
-			baseFields[name] = &graphql.Field{
-				Type:        fieldDef.Type,
-				Description: fieldDef.Description,
-				Resolve:     fieldDef.Resolve,
-			}
-		}
-	} else {
+	// Capture variables for the closure
+	capturedTypeToUse := typeToUse
+	capturedObjectName := r.objectName
+	capturedFieldOverrides := r.fieldOverrides
+	capturedFieldMiddleware := r.fieldMiddleware
+	capturedCustomFields := r.customFields
 
-		baseFields = gen.generateFields(typeToUse)
-	}
+	// Create the object type with a FieldsThunk for lazy field generation
+	// This avoids deadlock by releasing the lock before fields are generated
+	newType := graphql.NewObject(graphql.ObjectConfig{
+		Name: r.objectName,
+		Fields: (graphql.FieldsThunk)(func() graphql.Fields {
+			var baseFields graphql.Fields
 
-	// Apply field resolver overrides
-	for fieldName, override := range r.fieldOverrides {
-		if field, exists := baseFields[fieldName]; exists {
-			originalResolve := field.Resolve
-
-			// Apply middleware if any
-			finalResolve := override
-			if middlewares, hasMiddleware := r.fieldMiddleware[fieldName]; hasMiddleware {
-				// Wrap, apply middleware, then unwrap
-				wrapped := wrapGraphQLResolver(override)
-				wrapped = applyMiddlewares(wrapped, middlewares)
-				finalResolve = unwrapGraphQLResolver(wrapped)
-			}
-
-			// Set up fallback to original resolver if needed
-			if originalResolve != nil {
-				field.Resolve = func(p graphql.ResolveParams) (interface{}, error) {
-					result, err := finalResolve(p)
-					if err != nil {
-						// Fallback to original resolver
-						return originalResolve(p)
+			// Check if this is a wrapper type and handle it specially
+			if capturedTypeToUse != nil && gen.isWrapperType(capturedTypeToUse) {
+				// Create a wrapper object that handles the Data field safely
+				wrapperObj := gen.createWrapperObject(capturedTypeToUse, capturedObjectName)
+				// Use the wrapper object directly since we just need its field definitions
+				fieldDefinitionMap := wrapperObj.Fields()
+				baseFields = make(graphql.Fields)
+				for name, fieldDef := range fieldDefinitionMap {
+					baseFields[name] = &graphql.Field{
+						Type:        fieldDef.Type,
+						Description: fieldDef.Description,
+						Resolve:     fieldDef.Resolve,
 					}
-					return result, nil
 				}
 			} else {
-				field.Resolve = finalResolve
+				baseFields = gen.generateFields(capturedTypeToUse)
 			}
-		}
-	}
 
-	// Add custom fields
-	for fieldName, customField := range r.customFields {
-		baseFields[fieldName] = customField
-	}
+			// Apply field resolver overrides
+			for fieldName, override := range capturedFieldOverrides {
+				if field, exists := baseFields[fieldName]; exists {
+					originalResolve := field.Resolve
 
-	newType := graphql.NewObject(graphql.ObjectConfig{
-		Name:   r.objectName,
-		Fields: baseFields,
+					// Apply middleware if any
+					finalResolve := override
+					if middlewares, hasMiddleware := capturedFieldMiddleware[fieldName]; hasMiddleware {
+						// Wrap, apply middleware, then unwrap
+						wrapped := wrapGraphQLResolver(override)
+						wrapped = applyMiddlewares(wrapped, middlewares)
+						finalResolve = unwrapGraphQLResolver(wrapped)
+					}
+
+					// Set up fallback to original resolver if needed
+					if originalResolve != nil {
+						field.Resolve = func(p graphql.ResolveParams) (interface{}, error) {
+							result, err := finalResolve(p)
+							if err != nil {
+								// Fallback to original resolver
+								return originalResolve(p)
+							}
+							return result, nil
+						}
+					} else {
+						field.Resolve = finalResolve
+					}
+				}
+			}
+
+			// Add custom fields
+			for fieldName, customField := range capturedCustomFields {
+				baseFields[fieldName] = customField
+			}
+
+			return baseFields
+		}),
 	})
 
 	// Register the type
 	typeRegistry[r.objectName] = newType
+	typeRegistryMu.Unlock()
+
 	return newType
 }
 

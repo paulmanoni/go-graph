@@ -4,20 +4,13 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/graphql-go/graphql"
 )
 
-// Global processing types to prevent infinite recursion across all generators
-var (
-	globalProcessingTypes   = make(map[reflect.Type]bool)
-	globalProcessingTypesMu sync.RWMutex
-	// Object type registry to avoid duplicate type creation
-	objectTypeRegistry   = make(map[string]*graphql.Object)
-	objectTypeRegistryMu sync.RWMutex
-)
+// Note: Object types use the unified typeRegistry from graphql_unified_resolver.go
+// to prevent duplicate type creation across top-level and nested types
 
 type FieldGenerator[T any] struct {
 	typeCache       map[reflect.Type]graphql.Output
@@ -193,27 +186,32 @@ func (g *FieldGenerator[T]) getBaseGraphQLType(t reflect.Type, objectTypeName *s
 			}
 			return graphql.NewList(elemType)
 		} else {
-			// Check if object type already exists in the registry
-			objectTypeRegistryMu.RLock()
-			if existingType, exists := objectTypeRegistry[nameObject]; exists {
-				objectTypeRegistryMu.RUnlock()
+			// Use the unified type registry from graphql_unified_resolver.go
+			// to prevent duplicate type creation across top-level and nested types
+			typeRegistryMu.RLock()
+			if existingType, exists := typeRegistry[nameObject]; exists {
+				typeRegistryMu.RUnlock()
 				return existingType
 			}
-			objectTypeRegistryMu.RUnlock()
+			typeRegistryMu.RUnlock()
 
-			// Create new object type
-			objectTypeRegistryMu.Lock()
-			defer objectTypeRegistryMu.Unlock()
+			// Create new object type - must register BEFORE creating fields
+			// to handle recursive types and avoid deadlocks
+			typeRegistryMu.Lock()
 
 			// Double-check in case another goroutine created it
-			if existingType, exists := objectTypeRegistry[nameObject]; exists {
+			if existingType, exists := typeRegistry[nameObject]; exists {
+				typeRegistryMu.Unlock()
 				return existingType
 			}
 
+			// Create the object type with a FieldsThunk for lazy field generation
+			// We need to capture t in the closure
+			capturedType := t
 			newObjectType := graphql.NewObject(graphql.ObjectConfig{
 				Name: nameObject,
 				Fields: (graphql.FieldsThunk)(func() graphql.Fields {
-					fields := g.generateFields(t)
+					fields := g.generateFields(capturedType)
 					if len(fields) == 0 {
 						// Add a placeholder field if no fields generated
 						fields = graphql.Fields{
@@ -227,8 +225,10 @@ func (g *FieldGenerator[T]) getBaseGraphQLType(t reflect.Type, objectTypeName *s
 				}),
 			})
 
-			// Register the new object type
-			objectTypeRegistry[nameObject] = newObjectType
+			// Register the new object type in the unified registry
+			typeRegistry[nameObject] = newObjectType
+			typeRegistryMu.Unlock()
+
 			return newObjectType
 		}
 	case reflect.Interface:
@@ -433,24 +433,28 @@ func (g *FieldGenerator[T]) getBaseInputTypeWithContext(t reflect.Type, fieldNam
 		}
 		inputTypeRegistryMu.RUnlock()
 
-		// Create new input type
+		// Create new input type - must register BEFORE creating fields
+		// to handle recursive types and avoid deadlocks
 		inputTypeRegistryMu.Lock()
-		defer inputTypeRegistryMu.Unlock()
 
 		// Double-check in case another goroutine created it
 		if existingType, exists := inputTypeRegistry[inputTypeName]; exists {
+			inputTypeRegistryMu.Unlock()
 			return existingType
 		}
 
+		// Capture t for the closure
+		capturedType := t
 		newInputType := graphql.NewInputObject(graphql.InputObjectConfig{
 			Name: inputTypeName,
 			Fields: (graphql.InputObjectConfigFieldMapThunk)(func() graphql.InputObjectConfigFieldMap {
-				return g.generateInputFields(t)
+				return g.generateInputFields(capturedType)
 			}),
 		})
 
 		// Register the new input type
 		inputTypeRegistry[inputTypeName] = newInputType
+		inputTypeRegistryMu.Unlock()
 
 		return newInputType
 

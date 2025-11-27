@@ -535,6 +535,135 @@ func TestNewResolver_AsPaginated(t *testing.T) {
 	}
 }
 
+func TestNewResolver_SliceOfStrings_WithoutAsList(t *testing.T) {
+	// Test that NewResolver[[]string] works without calling AsList()
+	field := NewResolver[[]string]("tags").
+		WithResolver(func(p ResolveParams) (*[]string, error) {
+			tags := []string{"go", "graphql", "test"}
+			return &tags, nil
+		}).BuildQuery()
+
+	if field.Name() != "tags" {
+		t.Errorf("Field name = %v, want tags", field.Name())
+	}
+
+	graphqlField := field.Serve()
+	if graphqlField.Type == nil {
+		t.Error("Field type should not be nil")
+	}
+
+	// Verify it's a list type
+	listType, ok := graphqlField.Type.(*graphql.List)
+	if !ok {
+		t.Errorf("Expected list type, got %T", graphqlField.Type)
+		return
+	}
+
+	// Verify the element type is String
+	if listType.OfType != graphql.String {
+		t.Errorf("Expected list of String, got list of %v", listType.OfType)
+	}
+
+	// Test resolver execution
+	schema, err := NewSchemaBuilder(SchemaBuilderParams{
+		QueryFields: []QueryField{field},
+	}).Build()
+	if err != nil {
+		t.Fatalf("Failed to build schema: %v", err)
+	}
+
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: `{ tags }`,
+	})
+
+	if len(result.Errors) > 0 {
+		t.Errorf("Query returned errors: %v", result.Errors)
+	}
+
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map result, got %T", result.Data)
+	}
+
+	tags, ok := data["tags"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected []interface{} for tags, got %T", data["tags"])
+	}
+
+	if len(tags) != 3 {
+		t.Errorf("Expected 3 tags, got %d", len(tags))
+	}
+
+	expectedTags := []string{"go", "graphql", "test"}
+	for i, tag := range tags {
+		if tag != expectedTags[i] {
+			t.Errorf("Tag[%d] = %v, want %v", i, tag, expectedTags[i])
+		}
+	}
+}
+
+func TestNewResolver_SliceOfInts_WithoutAsList(t *testing.T) {
+	// Test that NewResolver[[]int] works without calling AsList()
+	field := NewResolver[[]int]("numbers").
+		WithResolver(func(p ResolveParams) (*[]int, error) {
+			numbers := []int{1, 2, 3, 4, 5}
+			return &numbers, nil
+		}).BuildQuery()
+
+	if field.Name() != "numbers" {
+		t.Errorf("Field name = %v, want numbers", field.Name())
+	}
+
+	graphqlField := field.Serve()
+	if graphqlField.Type == nil {
+		t.Error("Field type should not be nil")
+	}
+
+	// Verify it's a list type
+	listType, ok := graphqlField.Type.(*graphql.List)
+	if !ok {
+		t.Errorf("Expected list type, got %T", graphqlField.Type)
+		return
+	}
+
+	// Verify the element type is Int
+	if listType.OfType != graphql.Int {
+		t.Errorf("Expected list of Int, got list of %v", listType.OfType)
+	}
+
+	// Test resolver execution
+	schema, err := NewSchemaBuilder(SchemaBuilderParams{
+		QueryFields: []QueryField{field},
+	}).Build()
+	if err != nil {
+		t.Fatalf("Failed to build schema: %v", err)
+	}
+
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: `{ numbers }`,
+	})
+
+	if len(result.Errors) > 0 {
+		t.Errorf("Query returned errors: %v", result.Errors)
+	}
+
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map result, got %T", result.Data)
+	}
+
+	numbers, ok := data["numbers"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected []interface{} for numbers, got %T", data["numbers"])
+	}
+
+	if len(numbers) != 5 {
+		t.Errorf("Expected 5 numbers, got %d", len(numbers))
+	}
+}
+
 // Test Query Validation
 
 func TestValidateGraphQLQuery_SimpleQuery(t *testing.T) {
