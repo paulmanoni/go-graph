@@ -1829,3 +1829,334 @@ func TestConcurrentEmbeddedFieldGeneration(t *testing.T) {
 		<-done
 	}
 }
+
+// PageableResponse for testing (similar to user's pkg.PageableResponse)
+type TestPageableResponse[T any] struct {
+	Size             int   `json:"size"`
+	Last             bool  `json:"last"`
+	HasNext          bool  `json:"hasNext"`
+	HasContent       bool  `json:"hasContent"`
+	NumberOfElements int   `json:"numberOfElements"`
+	Number           int   `json:"number"`
+	TotalElements    int64 `json:"totalElements"`
+	Content          []T   `json:"content"`
+}
+
+// Test for generic pageable response with nested struct - reproduces the issue
+// "Cannot query field 'id' on type 'Interview'"
+func TestPageableResponse_WithNestedStruct(t *testing.T) {
+	// Clear type registry to ensure clean state
+	typeRegistryMu.Lock()
+	typeRegistry = make(map[string]*graphql.Object)
+	typeRegistryMu.Unlock()
+
+	// Define nested struct similar to user's Advert
+	type Advert struct {
+		ID           int64  `json:"id"`
+		UID          string `json:"uid"`
+		AdvertName   string `json:"advertName"`
+		EmployerName string `json:"employerName"`
+	}
+
+	// Define main struct similar to user's Interview
+	type Interview struct {
+		ID                  int64      `json:"id"`
+		UID                 string     `json:"uid"`
+		Code                string     `json:"code"`
+		ApprovalStatus      *bool      `json:"approvalStatus,omitempty"`
+		InterviewDate       *time.Time `json:"interviewDate,omitempty"`
+		InterviewType       string     `json:"interviewType"`
+		InterviewStateEnum  string     `json:"interviewStateEnum"`
+		EndingTime          *time.Time `json:"endingTime,omitempty"`
+		StartingTime        *time.Time `json:"startingTime,omitempty"`
+		HasInvigis          *bool      `json:"hasInvigis,omitempty"`
+		Advert              *Advert    `json:"advert,omitempty"`
+	}
+
+	// Create resolver similar to user's NewGetActiveInterviewsPageable
+	field := NewResolver[TestPageableResponse[Interview]]("getActiveInterviewsPageable").
+		WithResolver(func(p ResolveParams) (*TestPageableResponse[Interview], error) {
+			approved := true
+			hasInvigis := false
+			now := time.Now()
+			return &TestPageableResponse[Interview]{
+				Size:             10,
+				Last:             false,
+				HasNext:          true,
+				HasContent:       true,
+				NumberOfElements: 1,
+				Number:           0,
+				TotalElements:    100,
+				Content: []Interview{
+					{
+						ID:                 1,
+						UID:                "interview-001",
+						Code:               "INT-001",
+						ApprovalStatus:     &approved,
+						InterviewDate:      &now,
+						InterviewType:      "ORAL",
+						InterviewStateEnum: "STARTED",
+						StartingTime:       &now,
+						HasInvigis:         &hasInvigis,
+						Advert: &Advert{
+							ID:           100,
+							UID:          "advert-001",
+							AdvertName:   "Software Engineer",
+							EmployerName: "Tech Corp",
+						},
+					},
+				},
+			}, nil
+		}).BuildQuery()
+
+	// Build schema
+	schema, err := NewSchemaBuilder(SchemaBuilderParams{
+		QueryFields: []QueryField{field},
+	}).Build()
+	if err != nil {
+		t.Fatalf("Failed to build schema: %v", err)
+	}
+
+	// Execute the exact query that was failing
+	query := `{
+		getActiveInterviewsPageable {
+			content {
+				id
+				uid
+				code
+				approvalStatus
+				interviewDate
+				interviewType
+				interviewStateEnum
+				endingTime
+				startingTime
+				hasInvigis
+				advert {
+					id
+					uid
+					advertName
+					employerName
+				}
+			}
+		}
+	}`
+
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+
+	// Check for errors - this is the main assertion
+	if len(result.Errors) > 0 {
+		for _, err := range result.Errors {
+			t.Errorf("GraphQL error: %s", err.Message)
+		}
+		t.Fatalf("Query returned %d errors", len(result.Errors))
+	}
+
+	// Verify data structure
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map result, got %T", result.Data)
+	}
+
+	pageableResult, ok := data["getActiveInterviewsPageable"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map for getActiveInterviewsPageable, got %T", data["getActiveInterviewsPageable"])
+	}
+
+	content, ok := pageableResult["content"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected []interface{} for content, got %T", pageableResult["content"])
+	}
+
+	if len(content) != 1 {
+		t.Fatalf("Expected 1 interview, got %d", len(content))
+	}
+
+	interview, ok := content[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map for interview, got %T", content[0])
+	}
+
+	// Verify interview fields
+	if interview["id"] != 1 {
+		t.Errorf("Expected id=1, got %v", interview["id"])
+	}
+	if interview["uid"] != "interview-001" {
+		t.Errorf("Expected uid='interview-001', got %v", interview["uid"])
+	}
+	if interview["code"] != "INT-001" {
+		t.Errorf("Expected code='INT-001', got %v", interview["code"])
+	}
+
+	// Verify nested advert
+	advert, ok := interview["advert"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map for advert, got %T", interview["advert"])
+	}
+
+	if advert["id"] != 100 {
+		t.Errorf("Expected advert id=100, got %v", advert["id"])
+	}
+	if advert["advertName"] != "Software Engineer" {
+		t.Errorf("Expected advert advertName='Software Engineer', got %v", advert["advertName"])
+	}
+}
+
+// Test that Interview type is consistently named regardless of where it's referenced
+// Note: Types defined in function scope get numeric suffixes from Go's reflection (e.g., Interview93)
+// This is a Go runtime behavior. In real applications, types are defined at package level
+// and don't have these suffixes. This test verifies that the queries work correctly.
+func TestTypeRegistryConsistency(t *testing.T) {
+	// Clear type registry
+	typeRegistryMu.Lock()
+	typeRegistry = make(map[string]*graphql.Object)
+	typeRegistryMu.Unlock()
+
+	type Advert struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+
+	type Interview struct {
+		ID     int64   `json:"id"`
+		Code   string  `json:"code"`
+		Advert *Advert `json:"advert"`
+	}
+
+	// First, create a resolver that uses Interview directly
+	directField := NewResolver[Interview]("getInterview").
+		WithResolver(func(p ResolveParams) (*Interview, error) {
+			return &Interview{ID: 1, Code: "INT-001"}, nil
+		}).BuildQuery()
+
+	// Then create a resolver that uses Interview inside PageableResponse
+	pageableField := NewResolver[TestPageableResponse[Interview]]("getInterviews").
+		WithResolver(func(p ResolveParams) (*TestPageableResponse[Interview], error) {
+			return &TestPageableResponse[Interview]{
+				Content: []Interview{{ID: 1, Code: "INT-001"}},
+			}, nil
+		}).BuildQuery()
+
+	// Build schema with both
+	schema, err := NewSchemaBuilder(SchemaBuilderParams{
+		QueryFields: []QueryField{directField, pageableField},
+	}).Build()
+	if err != nil {
+		t.Fatalf("Failed to build schema: %v", err)
+	}
+
+	// Both queries should work and return the same type structure
+	directQuery := `{ getInterview { id code advert { id name } } }`
+	pageableQuery := `{ getInterviews { content { id code advert { id name } } } }`
+
+	directResult := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: directQuery,
+	})
+
+	if len(directResult.Errors) > 0 {
+		for _, err := range directResult.Errors {
+			t.Errorf("Direct query error: %s", err.Message)
+		}
+	}
+
+	pageableResult := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: pageableQuery,
+	})
+
+	if len(pageableResult.Errors) > 0 {
+		for _, err := range pageableResult.Errors {
+			t.Errorf("Pageable query error: %s", err.Message)
+		}
+	}
+
+	// Both queries should succeed - that's the key verification
+	t.Logf("Both direct and pageable queries succeeded")
+}
+
+// Test deeply nested generic types
+func TestDeeplyNestedGenericTypes(t *testing.T) {
+	// Clear type registry
+	typeRegistryMu.Lock()
+	typeRegistry = make(map[string]*graphql.Object)
+	typeRegistryMu.Unlock()
+
+	type Level3 struct {
+		Value string `json:"value"`
+	}
+
+	type Level2 struct {
+		Level3Data *Level3 `json:"level3Data"`
+		Name       string  `json:"name"`
+	}
+
+	type Level1 struct {
+		Level2Data *Level2 `json:"level2Data"`
+		ID         int64   `json:"id"`
+	}
+
+	field := NewResolver[TestPageableResponse[Level1]]("getData").
+		WithResolver(func(p ResolveParams) (*TestPageableResponse[Level1], error) {
+			return &TestPageableResponse[Level1]{
+				Content: []Level1{
+					{
+						ID: 1,
+						Level2Data: &Level2{
+							Name: "test",
+							Level3Data: &Level3{
+								Value: "deep value",
+							},
+						},
+					},
+				},
+			}, nil
+		}).BuildQuery()
+
+	schema, err := NewSchemaBuilder(SchemaBuilderParams{
+		QueryFields: []QueryField{field},
+	}).Build()
+	if err != nil {
+		t.Fatalf("Failed to build schema: %v", err)
+	}
+
+	query := `{
+		getData {
+			content {
+				id
+				level2Data {
+					name
+					level3Data {
+						value
+					}
+				}
+			}
+		}
+	}`
+
+	result := graphql.Do(graphql.Params{
+		Schema:        schema,
+		RequestString: query,
+	})
+
+	if len(result.Errors) > 0 {
+		for _, err := range result.Errors {
+			t.Errorf("GraphQL error: %s", err.Message)
+		}
+		t.Fatalf("Query returned errors")
+	}
+
+	// Verify deep nesting works
+	data := result.Data.(map[string]interface{})
+	getData := data["getData"].(map[string]interface{})
+	content := getData["content"].([]interface{})
+	level1 := content[0].(map[string]interface{})
+	level2Data := level1["level2Data"].(map[string]interface{})
+	level3Data := level2Data["level3Data"].(map[string]interface{})
+
+	if level3Data["value"] != "deep value" {
+		t.Errorf("Expected 'deep value', got %v", level3Data["value"])
+	}
+}

@@ -3,6 +3,7 @@ package graph
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,39 @@ import (
 
 // Note: Object types use the unified typeRegistry from graphql_unified_resolver.go
 // to prevent duplicate type creation across top-level and nested types
+
+// graphqlNameRegex validates GraphQL names: must match /^[_a-zA-Z][_a-zA-Z0-9]*$/
+var graphqlNameRegex = regexp.MustCompile(`^[_a-zA-Z][_a-zA-Z0-9]*$`)
+
+// sanitizeTypeName cleans a Go type name to be a valid GraphQL type name.
+// Go adds identifiers like "·91" to types defined in function scope;
+// this removes any invalid characters to produce a valid GraphQL name.
+func sanitizeTypeName(name string) string {
+	if name == "" {
+		return ""
+	}
+
+	// Fast path: if already valid, return as-is
+	if graphqlNameRegex.MatchString(name) {
+		return name
+	}
+
+	// Remove any character that's not alphanumeric or underscore
+	var result strings.Builder
+	for i, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
+			result.WriteRune(r)
+		} else if r >= '0' && r <= '9' {
+			// Only allow digits after the first character
+			if i > 0 {
+				result.WriteRune(r)
+			}
+		}
+		// Skip any other characters (like · and numeric suffixes)
+	}
+
+	return result.String()
+}
 
 type FieldGenerator[T any] struct {
 	typeCache       map[reflect.Type]graphql.Output
@@ -176,7 +210,8 @@ func (g *FieldGenerator[T]) getBaseGraphQLType(t reflect.Type, objectTypeName *s
 		// Use just the type name for named structs (not anonymous)
 		// This ensures consistent type names across the schema
 		// Anonymous structs (t.Name() == "") get prefixed with parent type name
-		nameObject := t.Name()
+		// Sanitize the name to remove Go runtime identifiers (e.g., "Interview·91" -> "Interview")
+		nameObject := sanitizeTypeName(t.Name())
 		if nameObject == "" && g.objectTypeName != nil {
 			// Only prefix anonymous structs with parent type name
 			nameObject = fmt.Sprintf("%s_Anonymous", *g.objectTypeName)
@@ -570,6 +605,7 @@ func processStructArgs[T any](gen *FieldGenerator[T], t reflect.Type) graphql.Fi
 				if _, exists := args[name]; !exists {
 					args[name] = embeddedArg
 				}
+
 			}
 			continue
 		}

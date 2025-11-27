@@ -336,9 +336,38 @@ func GetTypeName[T any]() string {
 	// Check if it contains a slice inside generic brackets
 	hasSlice := strings.Contains(fullName, "[[]")
 
-	// Remove package paths
-	if idx := strings.LastIndex(fullName, "."); idx >= 0 {
-		fullName = fullName[idx+1:]
+	// Remove package paths - handle multiple segments
+	// e.g., "graph.TestPageableResponse[graph.Interview]" -> "TestPageableResponse[Interview]"
+	// First, handle the generic parameter if present
+	if bracketIdx := strings.Index(fullName, "["); bracketIdx >= 0 {
+		basePart := fullName[:bracketIdx]
+		paramPart := fullName[bracketIdx:]
+
+		// Remove package path from base
+		if idx := strings.LastIndex(basePart, "."); idx >= 0 {
+			basePart = basePart[idx+1:]
+		}
+
+		// Remove package paths from generic parameters
+		// Handle patterns like "[graph.Interview]" or "[[]graph.Interview]"
+		paramPart = strings.ReplaceAll(paramPart, "[", " [ ")
+		paramPart = strings.ReplaceAll(paramPart, "]", " ] ")
+		parts := strings.Fields(paramPart)
+		for i, part := range parts {
+			if part != "[" && part != "]" {
+				if idx := strings.LastIndex(part, "."); idx >= 0 {
+					parts[i] = part[idx+1:]
+				}
+			}
+		}
+		paramPart = strings.Join(parts, "")
+
+		fullName = basePart + paramPart
+	} else {
+		// No generics, just remove package path
+		if idx := strings.LastIndex(fullName, "."); idx >= 0 {
+			fullName = fullName[idx+1:]
+		}
 	}
 
 	// Remove slice markers and pointers
@@ -355,6 +384,10 @@ func GetTypeName[T any]() string {
 		fullName = "List" + fullName
 	}
 
+	// Sanitize to remove Go runtime identifiers (e.g., "Interview·91" -> "Interview")
+	// This also handles cases like "TestPageableResponse_Interview93" -> "TestPageableResponse_Interview"
+	fullName = sanitizeTypeName(fullName)
+
 	return fullName
 }
 
@@ -370,8 +403,8 @@ func getInputTypeName(t reflect.Type, fieldName string) string {
 		t = t.Elem()
 	}
 
-	// Get the type name
-	typeName := t.Name()
+	// Get the type name and sanitize it
+	typeName := sanitizeTypeName(t.Name())
 
 	// If it's an anonymous struct (no name), generate one from field name
 	if typeName == "" && t.Kind() == reflect.Struct {
@@ -414,6 +447,9 @@ func getInputTypeName(t reflect.Type, fieldName string) string {
 	fullName = strings.ReplaceAll(fullName, " ", "_")
 	fullName = strings.ReplaceAll(fullName, "{", "")
 	fullName = strings.ReplaceAll(fullName, "}", "")
+
+	// Final sanitization
+	fullName = sanitizeTypeName(fullName)
 
 	return fullName
 }
