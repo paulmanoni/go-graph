@@ -385,8 +385,8 @@ func BenchmarkNewHTTP_WithSanitization(b *testing.B) {
 func BenchmarkNewHTTP_WithAuth(b *testing.B) {
 	graphCtx := &GraphContext{
 		DEBUG: true,
-		UserDetailsFn: func(token string) (interface{}, error) {
-			return map[string]interface{}{"id": 1, "name": "User"}, nil
+		UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+			return ctx, map[string]interface{}{"id": 1, "name": "User"}, nil
 		},
 	}
 
@@ -597,8 +597,8 @@ func BenchmarkNew_HandlerWithAuth(b *testing.B) {
 	graphCtx := GraphContext{
 		Playground: true,
 		DEBUG:      true,
-		UserDetailsFn: func(token string) (interface{}, error) {
-			return map[string]interface{}{"id": 1}, nil
+		UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+			return ctx, map[string]interface{}{"id": 1}, nil
 		},
 		TokenExtractorFn: ExtractBearerToken,
 	}

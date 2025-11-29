@@ -86,6 +86,23 @@ func getDefaultEchoMutationTypeSafe() MutationField {
 }
 */
 
+// userDetailsResult holds the result of calling UserDetailsFn
+type userDetailsResult struct {
+	ctx     context.Context
+	details interface{}
+	err     error
+}
+
+// callUserDetailsFn calls UserDetailsFn with the given context and token
+// and returns the result. If UserDetailsFn is nil, returns the original context.
+func callUserDetailsFn(graphCtx *GraphContext, ctx context.Context, token string) userDetailsResult {
+	if graphCtx.UserDetailsFn == nil || token == "" {
+		return userDetailsResult{ctx: ctx}
+	}
+	newCtx, details, err := graphCtx.UserDetailsFn(ctx, token)
+	return userDetailsResult{ctx: newCtx, details: details, err: err}
+}
+
 // createWebSocketAuthFn creates an auth function for WebSocket connections
 // that reuses the HTTP authentication logic from GraphContext
 func createWebSocketAuthFn(graphCtx *GraphContext) func(r *http.Request) (interface{}, error) {
@@ -105,7 +122,8 @@ func createWebSocketAuthFn(graphCtx *GraphContext) func(r *http.Request) (interf
 			return nil, nil // No token, no auth
 		}
 
-		return graphCtx.UserDetailsFn(token)
+		_, details, err := graphCtx.UserDetailsFn(r.Context(), token)
+		return details, err
 	}
 }
 
@@ -248,8 +266,10 @@ func New(graphCtx GraphContext) (*handler.Handler, error) {
 				rootValue["token"] = token
 
 				// Use custom user details fetcher if provided
+				// Note: Context updates from UserDetailsFn are only accessible when using NewHTTP()
+				// The New() function cannot modify the request context
 				if graphCtx.UserDetailsFn != nil {
-					details, err := graphCtx.UserDetailsFn(token)
+					_, details, err := graphCtx.UserDetailsFn(ctx, token)
 					if err == nil {
 						rootValue["details"] = details
 					}
@@ -300,8 +320,14 @@ func New(graphCtx GraphContext) (*handler.Handler, error) {
 //	    EnableValidation:   true,
 //	    EnableSanitization: true,
 //	    Playground:         false,
-//	    UserDetailsFn: func(token string) (interface{}, error) {
-//	        return validateToken(token)
+//	    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+//	        user, err := validateToken(token)
+//	        if err != nil {
+//	            return ctx, nil, err
+//	        }
+//	        // Add user ID to context for access in resolvers via p.Context.Value("userID")
+//	        ctx = context.WithValue(ctx, "userID", user.ID)
+//	        return ctx, user, nil
 //	    },
 //	})
 //
@@ -368,6 +394,15 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 			return
 		}
 
+		// Call UserDetailsFn to potentially update context
+		// This allows UserDetailsFn to add values to context accessible via p.Context.Value()
+		token := extractToken(r, graphCtx.TokenExtractorFn)
+		result := callUserDetailsFn(graphCtx, r.Context(), token)
+		if result.ctx != r.Context() {
+			// Context was updated by UserDetailsFn, update the request
+			r = r.WithContext(result.ctx)
+		}
+
 		// Skip validation and sanitization in DEBUG mode
 		if graphCtx.DEBUG {
 			h.ServeHTTP(w, r)
@@ -420,18 +455,11 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 
 			// Execute validation if rules are configured
 			if len(rules) > 0 {
-				// Get user details from UserDetailsFn if provided
-				var userDetails interface{}
-				if graphCtx.UserDetailsFn != nil {
-					token := extractToken(r, graphCtx.TokenExtractorFn)
-					if token != "" {
-						userDetails, _ = graphCtx.UserDetailsFn(token)
-						// Ignore errors - validation rules will handle unauthenticated state
-					}
-				}
+				// Use user details from earlier UserDetailsFn call
+				userDetails := result.details
 
 				// Execute validation rules
-				if err := ExecuteValidationRules(query, schema, rules, userDetails, graphCtx.ValidationOptions); err != nil{
+				if err := ExecuteValidationRules(query, schema, rules, userDetails, graphCtx.ValidationOptions); err != nil {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusBadRequest)
 

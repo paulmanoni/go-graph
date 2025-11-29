@@ -51,8 +51,14 @@
 //	    SchemaParams: &graph.SchemaBuilderParams{
 //	        QueryFields: []graph.QueryField{getProtectedQuery()},
 //	    },
-//	    UserDetailsFn: func(token string) (interface{}, error) {
-//	        return validateAndGetUser(token)
+//	    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+//	        user, err := validateAndGetUser(token)
+//	        if err != nil {
+//	            return ctx, nil, err
+//	        }
+//	        // Add values to context accessible via p.Context.Value() in resolvers
+//	        ctx = context.WithValue(ctx, "userID", user.ID)
+//	        return ctx, user, nil
 //	    },
 //	})
 //

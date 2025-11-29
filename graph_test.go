@@ -819,8 +819,8 @@ func TestNewHTTP_DefaultSchema(t *testing.T) {
 func TestNewHTTP_WithAuth(t *testing.T) {
 	graphCtx := &GraphContext{
 		DEBUG: true,
-		UserDetailsFn: func(token string) (interface{}, error) {
-			return map[string]interface{}{"id": 1, "name": "Test User"}, nil
+		UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+			return ctx, map[string]interface{}{"id": 1, "name": "Test User"}, nil
 		},
 	}
 

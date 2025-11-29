@@ -41,8 +41,13 @@ import (
 //	    EnableValidation:   true,  // Max depth: 10, Max aliases: 4, Max complexity: 200
 //	    EnableSanitization: true,  // Remove field suggestions from errors
 //	    Playground:         false,
-//	    UserDetailsFn: func(token string) (interface{}, error) {
-//	        return validateJWT(token)
+//	    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+//	        user, err := validateJWT(token)
+//	        if err != nil {
+//	            return ctx, nil, err
+//	        }
+//	        ctx = context.WithValue(ctx, "userID", user.ID)
+//	        return ctx, user, nil
 //	    },
 //	}
 type GraphContext struct {
@@ -95,7 +100,24 @@ type GraphContext struct {
 	// UserDetailsFn: Custom user details fetching based on token
 	// If not provided, user details will not be added to rootValue
 	// The details are accessible in resolvers via GetRootInfo(p, "details", &user)
-	UserDetailsFn func(token string) (interface{}, error)
+	//
+	// The function receives the request context and token, and returns:
+	//   - ctx: Updated context with custom values (accessible via p.Context.Value() in resolvers)
+	//   - details: User details (accessible via GetRootInfo(p, "details", &user) in resolvers)
+	//   - error: Any error during user details fetching
+	//
+	// Example:
+	//
+	//	UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+	//	    user, err := validateJWT(token)
+	//	    if err != nil {
+	//	        return ctx, nil, err
+	//	    }
+	//	    // Add user ID to context for access in resolvers via p.Context.Value("userID")
+	//	    ctx = context.WithValue(ctx, "userID", user.ID)
+	//	    return ctx, user, nil
+	//	}
+	UserDetailsFn func(ctx context.Context, token string) (context.Context, interface{}, error)
 
 	// EnableValidation: Enable query validation (depth, complexity, introspection checks)
 	// Default: false (validation disabled)

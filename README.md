@@ -159,11 +159,19 @@ handler := graph.NewHTTP(&graph.GraphContext{
         },
     },
 
-    // Optional: Fetch user details from token
-    UserDetailsFn: func(token string) (interface{}, error) {
+    // Optional: Fetch user details from token and update context
+    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
         // Validate JWT, query database, etc.
         user, err := validateAndGetUser(token)
-        return user, err
+        if err != nil {
+            return ctx, nil, err
+        }
+
+        // Add values to context (accessible via p.Context.Value() in resolvers)
+        ctx = context.WithValue(ctx, "userID", user.ID)
+        ctx = context.WithValue(ctx, "roles", user.Roles)
+
+        return ctx, user, nil
     },
 })
 ```
@@ -174,13 +182,16 @@ Access in resolvers:
 func getProtectedQuery() graph.QueryField {
     return graph.NewResolver[User]("me").
         WithResolver(func(p graph.ResolveParams) (*User, error) {
-            // Get token
+            // Option 1: Get values from context (set by UserDetailsFn)
+            userID := p.Context.Value("userID").(string)
+
+            // Option 2: Get token directly
             token, err := graph.GetRootString(p, "token")
             if err != nil {
                 return nil, fmt.Errorf("authentication required")
             }
 
-            // Get user details (if UserDetailsFn provided)
+            // Option 3: Get user details struct (if UserDetailsFn provided)
             var user User
             if err := graph.GetRootInfo(p, "details", &user); err != nil {
                 return nil, err
@@ -214,8 +225,9 @@ handler := graph.NewHTTP(&graph.GraphContext{
         return r.URL.Query().Get("token")
     },
 
-    UserDetailsFn: func(token string) (interface{}, error) {
-        return getUserByToken(token)
+    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+        user, err := getUserByToken(token)
+        return ctx, user, err
     },
 })
 ```
@@ -234,8 +246,12 @@ handler := graph.NewHTTP(&graph.GraphContext{
     EnableSanitization: true,   // Sanitize errors
     Playground:         false,  // Disable playground
 
-    UserDetailsFn: func(token string) (interface{}, error) {
-        return validateAndGetUser(token)
+    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+        user, err := validateAndGetUser(token)
+        if err != nil {
+            return ctx, nil, err
+        }
+        return ctx, user, nil
     },
 })
 ```
@@ -319,12 +335,12 @@ handler := graph.NewHTTP(&graph.GraphContext{
     },
 
     // Fetch user details from token (reuses existing UserDetailsFn)
-    UserDetailsFn: func(token string) (interface{}, error) {
+    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
         user, err := validateJWT(token)
         if err != nil {
-            return nil, err
+            return ctx, nil, err
         }
-        return user, nil
+        return ctx, user, nil
     },
 })
 ```
@@ -696,12 +712,12 @@ func main() {
         ),
 
         // Fetch user details from JWT token (reuses existing UserDetailsFn)
-        UserDetailsFn: func(token string) (interface{}, error) {
+        UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
             user, err := validateJWT(token)
             if err != nil {
-                return nil, err  // Invalid token
+                return ctx, nil, err  // Invalid token
             }
-            return user, nil  // Returns your user struct that implements minimal interfaces
+            return ctx, user, nil  // Returns your user struct that implements minimal interfaces
         },
 
         // Validation options
@@ -1826,8 +1842,9 @@ handler := graph.NewHTTP(&graph.GraphContext{
     },
 
     // Optional: Authentication for WebSocket connections
-    UserDetailsFn: func(token string) (interface{}, error) {
-        return validateAndGetUser(token)
+    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
+        user, err := validateAndGetUser(token)
+        return ctx, user, err
     },
 })
 ```
@@ -1845,12 +1862,12 @@ handler := graph.NewHTTP(&graph.GraphContext{
     PubSub:              pubsub,
 
     // Extract user details from token
-    UserDetailsFn: func(token string) (interface{}, error) {
+    UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
         user, err := validateJWT(token)
         if err != nil {
-            return nil, err
+            return ctx, nil, err
         }
-        return user, nil
+        return ctx, user, nil
     },
 })
 ```
@@ -2134,7 +2151,7 @@ Creates a standard HTTP handler with validation and sanitization support.
 | `EnableValidation` | `bool` | `false` | Enable query validation |
 | `EnableSanitization` | `bool` | `false` | Enable error sanitization |
 | `TokenExtractorFn` | `func(*http.Request) string` | Bearer token | Custom token extraction |
-| `UserDetailsFn` | `func(string) (interface{}, error)` | `nil` | Fetch user from token |
+| `UserDetailsFn` | `func(context.Context, string) (context.Context, interface{}, error)` | `nil` | Fetch user from token and optionally update context |
 | `RootObjectFn` | `func(context.Context, *http.Request) map[string]interface{}` | `nil` | Custom root setup |
 
 **Note:** If both `Schema` and `SchemaParams` are `nil`, a default hello world schema is used.

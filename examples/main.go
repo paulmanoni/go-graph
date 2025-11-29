@@ -28,9 +28,11 @@ func main() {
 		},
 
 		// Optional: Fetch user details based on token
-		UserDetailsFn: func(token string) (interface{}, error) {
+		// The function can also update context for use in resolvers via p.Context.Value()
+		UserDetailsFn: func(ctx context.Context, token string) (context.Context, interface{}, error) {
 			// In production, validate JWT token, query database, etc.
-			return nil, nil
+			// Example: ctx = context.WithValue(ctx, "userID", user.ID)
+			return ctx, nil, nil
 		},
 
 		// Optional: Custom root object setup
