@@ -90,8 +90,8 @@ func getHello() graph.QueryField {
 func getUser() graph.QueryField {
     return graph.NewResolver[User]("user").
         WithArg("id", graph.String).
-        WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-            id := graph.Get[string](args, "id")
+        WithResolver(func(p graph.ResolveParams) (*User, error) {
+            id := graph.Get[string](graph.ArgsMap(p.Args), "id")
             return &User{ID: id, Name: "Alice"}, nil
         }).BuildQuery()
 }
@@ -963,8 +963,8 @@ The `WithResolver` method provides compile-time type safety by accepting a funct
 // ✅ Type-safe - returns *User
 graph.NewResolver[User]("user").
     WithArg("id", graph.String).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[string](args, "id")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[string](graph.ArgsMap(p.Args), "id")
         user := db.GetUserByID(id)  // Most ORMs return *User
         return user, nil             // No type assertions needed!
     }).BuildQuery()
@@ -1005,8 +1005,8 @@ type Post struct {
 func getPost() graph.QueryField {
     return graph.NewResolver[Post]("post").
         WithArg("id", graph.Int).
-        WithResolver(func(p graph.ResolveParams, args graph.Args) (*Post, error) {
-            id := graph.Get[int](args, "id")
+        WithResolver(func(p graph.ResolveParams) (*Post, error) {
+            id := graph.Get[int](graph.ArgsMap(p.Args), "id")
 
             post, err := postService.GetByID(id)
             if err != nil {
@@ -1073,8 +1073,8 @@ graph.NewArgsResolver[User, GetUserArgs]("user").
 ```go
 graph.NewResolver[User]("user").
     WithArgRequired("id", graph.Int).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[int](args, "id")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[int](graph.ArgsMap(p.Args), "id")
         return userService.GetByID(id)
     }).BuildQuery()
 ```
@@ -1090,15 +1090,15 @@ graph.NewArgsResolver[User, CreateUserInput]("createUser").
 // After (recommended):
 graph.NewResolver[User]("createUser").
     WithArg("input", CreateUserInput{}).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        input := graph.Get[CreateUserInput](args, "input")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        input := graph.Get[CreateUserInput](graph.ArgsMap(p.Args), "input")
         return userService.Create(input.Name, input.Email)
     }).BuildMutation()
 ```
 
 ## Chainable Arguments with WithArg
 
-`WithArg` provides a fluent API for adding arguments to your resolvers. It supports scalars, structs (including deeply nested), and works with a unified `WithResolver` that accepts both with and without args signatures.
+`WithArg` provides a fluent API for adding arguments to your resolvers. It supports scalars, structs (including deeply nested), and uses `ArgsMap(p.Args)` for type-safe argument access.
 
 ### Basic Usage
 
@@ -1113,9 +1113,9 @@ graph.NewResolver[Message]("hello").
 graph.NewResolver[User]("user").
     WithArg("id", graph.String).
     WithArg("limit", graph.Int).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[string](args, "id")
-        limit := graph.GetOr[int](args, "limit", 10)
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[string](graph.ArgsMap(p.Args), "id")
+        limit := graph.GetOr[int](graph.ArgsMap(p.Args), "limit", 10)
         return userService.GetByID(id)
     }).BuildQuery()
 
@@ -1127,8 +1127,8 @@ type UserInput struct {
 
 graph.NewResolver[User]("createUser").
     WithArg("input", UserInput{}).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        input := graph.Get[UserInput](args, "input")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        input := graph.Get[UserInput](graph.ArgsMap(p.Args), "input")
         return userService.Create(input.Name, input.Email)
     }).BuildMutation()
 ```
@@ -1221,9 +1221,9 @@ Example with error handling:
 ```go
 graph.NewResolver[User]("createUser").
     WithArg("input", CreateUserInput{}).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
         // Explicit error handling
-        input, err := graph.GetE[CreateUserInput](args, "input")
+        input, err := graph.GetE[CreateUserInput](graph.ArgsMap(p.Args), "input")
         if err != nil {
             return nil, fmt.Errorf("invalid input: %w", err)
         }
@@ -1237,8 +1237,8 @@ graph.NewResolver[User]("createUser").
 // Required argument (GraphQL NonNull)
 graph.NewResolver[User]("user").
     WithArgRequired("id", graph.String).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[string](args, "id") // always present
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[string](graph.ArgsMap(p.Args), "id") // always present
         return userService.GetByID(id)
     }).BuildQuery()
 
@@ -1247,9 +1247,9 @@ graph.NewResolver[User]("users").
     AsList().
     WithArgDefault("limit", graph.Int, 20).
     WithArgDefault("offset", graph.Int, 0).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*[]User, error) {
-        limit := graph.Get[int](args, "limit")  // 20 if not provided
-        offset := graph.Get[int](args, "offset") // 0 if not provided
+    WithResolver(func(p graph.ResolveParams) (*[]User, error) {
+        limit := graph.Get[int](graph.ArgsMap(p.Args), "limit")  // 20 if not provided
+        offset := graph.Get[int](graph.ArgsMap(p.Args), "offset") // 0 if not provided
         return userService.List(limit, offset)
     }).BuildQuery()
 ```
@@ -1274,39 +1274,35 @@ type UserProfileInput struct {
 // Generates nested InputObjects automatically
 graph.NewResolver[User]("createUser").
     WithArg("profile", UserProfileInput{}).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        profile := graph.Get[UserProfileInput](args, "profile")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        profile := graph.Get[UserProfileInput](graph.ArgsMap(p.Args), "profile")
         // Access nested data with type safety
         return userService.Create(profile.Name, profile.Address.City)
     }).BuildMutation()
 ```
 
-### Unified WithResolver
+### WithResolver Signature
 
-`WithResolver` automatically detects the function signature and handles both:
+`WithResolver` accepts a single, simple signature:
 
 ```go
-// Signature 1: Without args
 func(p graph.ResolveParams) (*T, error)
-
-// Signature 2: With args
-func(p graph.ResolveParams, args graph.Args) (*T, error)
 ```
 
-This means you can use the same `WithResolver` method regardless of whether you have arguments:
+Access arguments using `ArgsMap(p.Args)` with the type-safe `Get` functions:
 
 ```go
-// Without args - signature detected automatically
+// Without args
 graph.NewResolver[Message]("hello").
     WithResolver(func(p graph.ResolveParams) (*Message, error) {
         return &Message{Text: "Hello!"}, nil
     }).BuildQuery()
 
-// With args - signature detected automatically
+// With args - access via ArgsMap(p.Args)
 graph.NewResolver[User]("user").
     WithArg("id", graph.String).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[string](args, "id")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[string](graph.ArgsMap(p.Args), "id")
         return userService.GetByID(id)
     }).BuildQuery()
 ```
@@ -1332,10 +1328,10 @@ func getUsers() graph.QueryField {
         WithArg("search", graph.String).
         WithArgDefault("limit", graph.Int, 20).
         WithArgDefault("offset", graph.Int, 0).
-        WithResolver(func(p graph.ResolveParams, args graph.Args) (*[]User, error) {
-            search := graph.GetOr[string](args, "search", "")
-            limit := graph.Get[int](args, "limit")
-            offset := graph.Get[int](args, "offset")
+        WithResolver(func(p graph.ResolveParams) (*[]User, error) {
+            search := graph.GetOr[string](graph.ArgsMap(p.Args), "search", "")
+            limit := graph.Get[int](graph.ArgsMap(p.Args), "limit")
+            offset := graph.Get[int](graph.ArgsMap(p.Args), "offset")
 
             users := userService.Search(search, limit, offset)
             return &users, nil
@@ -1346,8 +1342,8 @@ func getUsers() graph.QueryField {
 func createUser() graph.MutationField {
     return graph.NewResolver[User]("createUser").
         WithArg("input", CreateUserInput{}).
-        WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-            input := graph.Get[CreateUserInput](args, "input")
+        WithResolver(func(p graph.ResolveParams) (*User, error) {
+            input := graph.Get[CreateUserInput](graph.ArgsMap(p.Args), "input")
             return userService.Create(input.Name, input.Email)
         }).BuildMutation()
 }
@@ -1385,8 +1381,8 @@ graph.NewResolver[User]("user").
     WithArg("id", graph.Int).
     WithMiddleware(graph.LoggingMiddleware).
     WithMiddleware(graph.AuthMiddleware("admin")).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[int](args, "id")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[int](graph.ArgsMap(p.Args), "id")
         return userService.GetByID(id)
     }).BuildQuery()
 ```
@@ -1437,9 +1433,9 @@ graph.NewResolver[Product]("product").
         id := graph.Get[int](graph.ArgsMap(p.Args), "id")
         return fmt.Sprintf("product:%d", id)
     })).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*Product, error) {
+    WithResolver(func(p graph.ResolveParams) (*Product, error) {
         // Only executes on cache miss
-        id := graph.Get[int](args, "id")
+        id := graph.Get[int](graph.ArgsMap(p.Args), "id")
         return productService.GetByID(id)
     }).BuildQuery()
 ```
@@ -1523,8 +1519,8 @@ graph.NewResolver[User]("deleteUser").
     AsMutation().
     WithArg("id", graph.Int).
     WithPermission(graph.AuthMiddleware("admin")).
-    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-        id := graph.Get[int](args, "id")
+    WithResolver(func(p graph.ResolveParams) (*User, error) {
+        id := graph.Get[int](graph.ArgsMap(p.Args), "id")
         return userService.Delete(id)
     }).BuildMutation()
 ```
