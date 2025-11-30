@@ -1076,109 +1076,13 @@ func createPost() graph.MutationField {
 }
 ```
 
-## Type-Safe Arguments with NewArgsResolver
+## Type-Safe Arguments with NewArgsResolver (Deprecated)
 
-`NewArgsResolver` provides compile-time type safety for both the return value AND arguments. The resolver function receives typed arguments directly, eliminating the need for manual argument extraction.
+> **Deprecated:** `NewArgsResolver` is deprecated in favor of the new `WithArg` API. See the [Chainable Arguments with WithArg](#chainable-arguments-with-witharg) section below for the recommended approach.
 
-### Basic Usage
+### Migration Guide
 
-```go
-// Struct arguments - auto-generates GraphQL args from struct fields
-type GetUserArgs struct {
-    ID int `json:"id" graphql:"id,required" description:"User ID"`
-}
-
-func getUser() graph.QueryField {
-    return graph.NewArgsResolver[User, GetUserArgs]("user").
-        WithResolver(func(ctx context.Context, p graph.ResolveParams, args GetUserArgs) (*User, error) {
-            // args.ID is already parsed and type-safe!
-            return userService.GetByID(args.ID)
-        }).BuildQuery()
-}
-
-// Primitive arguments - requires field name
-func echo() graph.MutationField {
-    return graph.NewArgsResolver[string, string]("echo", "message").
-        WithResolver(func(ctx context.Context, p graph.ResolveParams, args string) (*string, error) {
-            // args is the message string directly
-            return &args, nil
-        }).BuildMutation()
-}
-```
-
-### Resolver Function Signature
-
-The `WithResolver` method accepts a function with three parameters:
-
-```go
-func(ctx context.Context, p graph.ResolveParams, args A) (*T, error)
-```
-
-- **`ctx context.Context`** - Request context (can be nil, defaults to Background)
-- **`p graph.ResolveParams`** - Full GraphQL resolve parameters (for advanced use cases)
-- **`args A`** - Typed arguments parsed and validated
-
-### Anonymous Struct Naming
-
-Anonymous nested structs are automatically given meaningful names based on the parent type:
-
-```go
-type MessageArgs struct {
-    Input struct {
-        Message string `json:"message"`
-        Name    string `json:"name"`
-    } `json:"input"`
-}
-
-// The anonymous Input struct becomes "MessageArgsInput" in GraphQL schema
-func sendMessage() graph.MutationField {
-    return graph.NewArgsResolver[string, MessageArgs]("sendMessage").
-        WithResolver(func(ctx context.Context, p graph.ResolveParams, args MessageArgs) (*string, error) {
-            response := fmt.Sprintf("Hello %s: %s", args.Input.Name, args.Input.Message)
-            return &response, nil
-        }).BuildMutation()
-}
-```
-
-**GraphQL Schema Generated:**
-```graphql
-type Mutation {
-  sendMessage(input: MessageArgsInput!): String
-}
-
-input MessageArgsInput {
-  message: String
-  name: String
-}
-```
-
-### Benefits
-
-- ✅ **No manual argument extraction** - Arguments are parsed and typed automatically
-- ✅ **Compile-time safety** - Both args and return type are type-checked
-- ✅ **Context access** - Explicit `context.Context` parameter
-- ✅ **Full params access** - Access to `graph.ResolveParams` when needed
-- ✅ **Auto-generated schema** - Arguments converted to GraphQL types automatically
-- ✅ **Meaningful type names** - Anonymous structs named after parent type
-
-### Comparison with NewResolver
-
-**NewResolver** - Manual argument extraction:
-```go
-graph.NewResolver[User]("user").
-    WithArgs(graphql.FieldConfigArgument{
-        "id": &graphql.ArgumentConfig{Type: graphql.Int},
-    }).
-    WithResolver(func(p graph.ResolveParams) (*User, error) {
-        id, err := graph.GetArgInt(p, "id")  // Manual extraction
-        if err != nil {
-            return nil, err
-        }
-        return userService.GetByID(id)
-    }).BuildQuery()
-```
-
-**NewArgsResolver** - Type-safe arguments:
+**Before (deprecated):**
 ```go
 type GetUserArgs struct {
     ID int `json:"id" graphql:"id,required"`
@@ -1186,72 +1090,250 @@ type GetUserArgs struct {
 
 graph.NewArgsResolver[User, GetUserArgs]("user").
     WithResolver(func(ctx context.Context, p graph.ResolveParams, args GetUserArgs) (*User, error) {
-        return userService.GetByID(args.ID)  // Direct access, type-safe!
+        return userService.GetByID(args.ID)
     }).BuildQuery()
 ```
 
-### Advanced Examples
-
-**With validation tags:**
+**After (recommended):**
 ```go
-type CreatePostArgs struct {
-    Title   string `json:"title" graphql:"title,required" description:"Post title (required)"`
-    Content string `json:"content" description:"Post content"`
-    Tags    []string `json:"tags" description:"Post tags"`
+graph.NewResolver[User]("user").
+    WithArgRequired("id", graph.Int).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[int](args, "id")
+        return userService.GetByID(id)
+    }).BuildQuery()
+```
+
+**For struct inputs:**
+```go
+// Before (deprecated):
+graph.NewArgsResolver[User, CreateUserInput]("createUser").
+    WithResolver(func(ctx context.Context, p graph.ResolveParams, input CreateUserInput) (*User, error) {
+        return userService.Create(input.Name, input.Email)
+    }).BuildMutation()
+
+// After (recommended):
+graph.NewResolver[User]("createUser").
+    WithArg("input", CreateUserInput{}).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        input := graph.Get[CreateUserInput](args, "input")
+        return userService.Create(input.Name, input.Email)
+    }).BuildMutation()
+```
+
+## Chainable Arguments with WithArg
+
+`WithArg` provides a fluent API for adding arguments to your resolvers. It supports scalars, structs (including deeply nested), and works with a unified `WithResolver` that accepts both with and without args signatures.
+
+### Basic Usage
+
+```go
+// Without args - simple resolver
+graph.NewResolver[Message]("hello").
+    WithResolver(func(p graph.ResolveParams) (*Message, error) {
+        return &Message{Text: "Hello, World!"}, nil
+    }).BuildQuery()
+
+// With scalar args - using graph.String, graph.Int, etc.
+graph.NewResolver[User]("user").
+    WithArg("id", graph.String).
+    WithArg("limit", graph.Int).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[string](args, "id")
+        limit := graph.GetOr[int](args, "limit", 10)
+        return userService.GetByID(id)
+    }).BuildQuery()
+
+// With struct input - auto-generates InputObject
+type UserInput struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
 }
 
-func createPost() graph.MutationField {
-    return graph.NewArgsResolver[Post, CreatePostArgs]("createPost").
-        WithResolver(func(ctx context.Context, p graph.ResolveParams, args CreatePostArgs) (*Post, error) {
-            // All fields are already validated and typed
-            post, err := postService.Create(args.Title, args.Content, args.Tags)
-            if err != nil {
-                return nil, err
-            }
-            return post, nil
+graph.NewResolver[User]("createUser").
+    WithArg("input", UserInput{}).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        input := graph.Get[UserInput](args, "input")
+        return userService.Create(input.Name, input.Email)
+    }).BuildMutation()
+```
+
+### Supported Argument Types
+
+| Type | Usage | GraphQL Type |
+|------|-------|--------------|
+| `graph.String` | `WithArg("id", graph.String)` | `String` |
+| `graph.Int` | `WithArg("age", graph.Int)` | `Int` |
+| `graph.Float` | `WithArg("price", graph.Float)` | `Float` |
+| `graph.Boolean` | `WithArg("active", graph.Boolean)` | `Boolean` |
+| `graph.ID` | `WithArg("userId", graph.ID)` | `ID` |
+| Zero values | `WithArg("name", "")` | `String` |
+| Structs | `WithArg("input", UserInput{})` | `UserInputInput` |
+
+### Args Helper Functions
+
+```go
+// Get a value with type safety (returns zero value if missing)
+id := graph.Get[string](args, "id")
+age := graph.Get[int](args, "age")
+active := graph.Get[bool](args, "active")
+
+// Get struct argument with automatic conversion
+input := graph.Get[UserInput](args, "input")
+
+// Get with default value
+limit := graph.GetOr[int](args, "limit", 10)
+name := graph.GetOr[string](args, "name", "Anonymous")
+
+// Check if argument exists
+if args.Has("optionalField") {
+    // process optional field
+}
+
+// Get raw map for complex processing (if needed)
+rawArgs := args.Raw()
+```
+
+### Required Arguments and Defaults
+
+```go
+// Required argument (GraphQL NonNull)
+graph.NewResolver[User]("user").
+    WithArgRequired("id", graph.String).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[string](args, "id") // always present
+        return userService.GetByID(id)
+    }).BuildQuery()
+
+// Argument with default value
+graph.NewResolver[User]("users").
+    AsList().
+    WithArgDefault("limit", graph.Int, 20).
+    WithArgDefault("offset", graph.Int, 0).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*[]User, error) {
+        limit := graph.Get[int](args, "limit")  // 20 if not provided
+        offset := graph.Get[int](args, "offset") // 0 if not provided
+        return userService.List(limit, offset)
+    }).BuildQuery()
+```
+
+### Nested Struct Support
+
+Deeply nested structs are automatically converted to GraphQL InputObjects:
+
+```go
+type AddressInput struct {
+    Street  string `json:"street"`
+    City    string `json:"city"`
+    Country string `json:"country"`
+}
+
+type UserProfileInput struct {
+    Name    string       `json:"name"`
+    Age     int          `json:"age"`
+    Address AddressInput `json:"address"`
+}
+
+// Generates nested InputObjects automatically
+graph.NewResolver[User]("createUser").
+    WithArg("profile", UserProfileInput{}).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        profile := graph.Get[UserProfileInput](args, "profile")
+        // Access nested data with type safety
+        return userService.Create(profile.Name, profile.Address.City)
+    }).BuildMutation()
+```
+
+### Unified WithResolver
+
+`WithResolver` automatically detects the function signature and handles both:
+
+```go
+// Signature 1: Without args
+func(p graph.ResolveParams) (*T, error)
+
+// Signature 2: With args
+func(p graph.ResolveParams, args graph.Args) (*T, error)
+```
+
+This means you can use the same `WithResolver` method regardless of whether you have arguments:
+
+```go
+// Without args - signature detected automatically
+graph.NewResolver[Message]("hello").
+    WithResolver(func(p graph.ResolveParams) (*Message, error) {
+        return &Message{Text: "Hello!"}, nil
+    }).BuildQuery()
+
+// With args - signature detected automatically
+graph.NewResolver[User]("user").
+    WithArg("id", graph.String).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[string](args, "id")
+        return userService.GetByID(id)
+    }).BuildQuery()
+```
+
+### Complete Example
+
+```go
+type User struct {
+    ID    string `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+type CreateUserInput struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+// Query with multiple args
+func getUsers() graph.QueryField {
+    return graph.NewResolver[User]("users").
+        AsList().
+        WithArg("search", graph.String).
+        WithArgDefault("limit", graph.Int, 20).
+        WithArgDefault("offset", graph.Int, 0).
+        WithResolver(func(p graph.ResolveParams, args graph.Args) (*[]User, error) {
+            search := graph.GetOr[string](args, "search", "")
+            limit := graph.Get[int](args, "limit")
+            offset := graph.Get[int](args, "offset")
+
+            users := userService.Search(search, limit, offset)
+            return &users, nil
+        }).BuildQuery()
+}
+
+// Mutation with struct input
+func createUser() graph.MutationField {
+    return graph.NewResolver[User]("createUser").
+        WithArg("input", CreateUserInput{}).
+        WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+            input := graph.Get[CreateUserInput](args, "input")
+            return userService.Create(input.Name, input.Email)
         }).BuildMutation()
 }
 ```
 
-**With authentication (using middleware):**
-```go
-type UpdateUserArgs struct {
-    ID   int    `json:"id" graphql:"id,required"`
-    Name string `json:"name" graphql:"name,required"`
-}
+### Comparison: WithArg vs NewArgsResolver
 
-func updateUser() graph.MutationField {
-    return graph.NewArgsResolver[User, UpdateUserArgs]("updateUser").
-        WithMiddleware(graph.AuthMiddleware("admin")).  // Require admin role
-        WithResolver(func(ctx context.Context, p graph.ResolveParams, args UpdateUserArgs) (*User, error) {
-            // Auth already validated by middleware
-            // Use typed args directly
-            return userService.Update(args.ID, args.Name)
-        }).BuildMutation()
-}
-```
+| Feature | WithArg | NewArgsResolver |
+|---------|---------|-----------------|
+| Argument definition | Chainable method | Struct with tags |
+| Type safety | Runtime (`Get[T]`) | Compile-time |
+| Flexibility | Mix scalars and structs | Single struct |
+| Best for | Flexible APIs | Structured inputs |
 
-**With manual token extraction:**
-```go
-type UpdateUserArgs struct {
-    ID   int    `json:"id" graphql:"id,required"`
-    Name string `json:"name" graphql:"name,required"`
-}
+**Use `WithArg` when:**
+- You have a mix of scalar and struct arguments
+- Arguments are optional with defaults
+- You want chainable, fluent API
 
-func updateUser() graph.MutationField {
-    return graph.NewArgsResolver[User, UpdateUserArgs]("updateUser").
-        WithResolver(func(ctx context.Context, p graph.ResolveParams, args UpdateUserArgs) (*User, error) {
-            // Extract auth token from root
-            token, err := graph.GetRootString(p, "token")
-            if err != nil {
-                return nil, fmt.Errorf("authentication required")
-            }
-
-            // Use typed args directly
-            return userService.Update(token, args.ID, args.Name)
-        }).BuildMutation()
-}
-```
+**Use `NewArgsResolver` when:**
+- All arguments fit in a single struct
+- You want compile-time type safety
+- Arguments have validation tags
 
 ## Middleware
 
