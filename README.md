@@ -1185,6 +1185,15 @@ input := graph.Get[UserInput](args, "input")
 limit := graph.GetOr[int](args, "limit", 10)
 name := graph.GetOr[string](args, "name", "Anonymous")
 
+// Get with error handling (returns error if missing or conversion fails)
+input, err := graph.GetE[UserInput](args, "input")
+if err != nil {
+    return nil, fmt.Errorf("invalid input: %w", err)
+}
+
+// MustGet panics if missing or conversion fails (use when certain arg exists)
+id := graph.MustGet[string](args, "id")
+
 // Check if argument exists
 if args.Has("optionalField") {
     // process optional field
@@ -1192,6 +1201,30 @@ if args.Has("optionalField") {
 
 // Get raw map for complex processing (if needed)
 rawArgs := args.Raw()
+```
+
+### Error Handling Options
+
+| Function | Missing Key | Conversion Error | Use Case |
+|----------|-------------|------------------|----------|
+| `Get[T]` | Zero value | Zero value | Optional args, quick access |
+| `GetOr[T]` | Default | Default | Args with defaults |
+| `GetE[T]` | Error | Error | Required args with validation |
+| `MustGet[T]` | Panic | Panic | Required args (certain to exist) |
+
+Example with error handling:
+
+```go
+graph.NewResolver[User]("createUser").
+    WithArg("input", CreateUserInput{}).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        // Explicit error handling
+        input, err := graph.GetE[CreateUserInput](args, "input")
+        if err != nil {
+            return nil, fmt.Errorf("invalid input: %w", err)
+        }
+        return userService.Create(input.Name, input.Email)
+    }).BuildMutation()
 ```
 
 ### Required Arguments and Defaults

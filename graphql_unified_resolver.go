@@ -818,20 +818,54 @@ func (a Args) Has(name string) bool {
 	return exists
 }
 
-// Get retrieves an argument by name with type safety
+// Get retrieves an argument by name with type safety.
+// Returns zero value if key is missing or conversion fails.
+// Use GetE for explicit error handling.
 func Get[T any](a Args, name string) T {
+	val, _ := GetE[T](a, name)
+	return val
+}
+
+// GetE retrieves an argument by name with type safety and error handling.
+// Returns an error if the key is missing or type conversion fails.
+//
+// Usage:
+//
+//	input, err := graph.GetE[UserInput](args, "input")
+//	if err != nil {
+//	    return nil, fmt.Errorf("invalid input: %w", err)
+//	}
+func GetE[T any](a Args, name string) (T, error) {
 	var zero T
 	if a.raw == nil {
-		return zero
+		return zero, fmt.Errorf("argument %q not found: args is nil", name)
 	}
 	val, exists := a.raw[name]
 	if !exists {
-		return zero
+		return zero, fmt.Errorf("argument %q not found", name)
+	}
+	if val == nil {
+		return zero, fmt.Errorf("argument %q is nil", name)
 	}
 	if typed, ok := val.(T); ok {
-		return typed
+		return typed, nil
 	}
-	return convertArg[T](val)
+	result, err := convertArgE[T](val, name)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
+}
+
+// MustGet retrieves an argument by name with type safety.
+// Panics if the key is missing or conversion fails.
+// Use only when you're certain the argument exists and is valid.
+func MustGet[T any](a Args, name string) T {
+	val, err := GetE[T](a, name)
+	if err != nil {
+		panic(fmt.Sprintf("MustGet failed: %v", err))
+	}
+	return val
 }
 
 // GetOr retrieves an argument by name with a default value if not found
@@ -843,33 +877,41 @@ func GetOr[T any](a Args, name string, defaultVal T) T {
 	if !exists {
 		return defaultVal
 	}
+	if val == nil {
+		return defaultVal
+	}
 	if typed, ok := val.(T); ok {
 		return typed
 	}
-	converted := convertArg[T](val)
-	var zero T
-	if reflect.DeepEqual(converted, zero) {
+	result, err := convertArgE[T](val, name)
+	if err != nil {
 		return defaultVal
 	}
-	return converted
+	return result
 }
 
-// convertArg handles type conversions for GraphQL arguments
+// convertArg handles type conversions for GraphQL arguments (returns zero value on error)
 func convertArg[T any](val interface{}) T {
+	result, _ := convertArgE[T](val, "")
+	return result
+}
+
+// convertArgE handles type conversions for GraphQL arguments with error handling
+func convertArgE[T any](val interface{}, argName string) (T, error) {
 	var zero T
 	targetType := reflect.TypeOf(zero)
 	if targetType == nil {
-		return zero
+		return zero, fmt.Errorf("cannot determine target type for argument %q", argName)
 	}
 
 	valReflect := reflect.ValueOf(val)
 	if !valReflect.IsValid() {
-		return zero
+		return zero, fmt.Errorf("argument %q has invalid value", argName)
 	}
 
 	// Direct conversion if possible
 	if valReflect.Type().ConvertibleTo(targetType) {
-		return valReflect.Convert(targetType).Interface().(T)
+		return valReflect.Convert(targetType).Interface().(T), nil
 	}
 
 	// Handle int/float conversions (GraphQL often sends numbers as float64)
@@ -877,16 +919,16 @@ func convertArg[T any](val interface{}) T {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		switch v := val.(type) {
 		case float64:
-			return reflect.ValueOf(int64(v)).Convert(targetType).Interface().(T)
+			return reflect.ValueOf(int64(v)).Convert(targetType).Interface().(T), nil
 		case int:
-			return reflect.ValueOf(int64(v)).Convert(targetType).Interface().(T)
+			return reflect.ValueOf(int64(v)).Convert(targetType).Interface().(T), nil
 		}
 	case reflect.Float32, reflect.Float64:
 		switch v := val.(type) {
 		case int:
-			return reflect.ValueOf(float64(v)).Convert(targetType).Interface().(T)
+			return reflect.ValueOf(float64(v)).Convert(targetType).Interface().(T), nil
 		case int64:
-			return reflect.ValueOf(float64(v)).Convert(targetType).Interface().(T)
+			return reflect.ValueOf(float64(v)).Convert(targetType).Interface().(T), nil
 		}
 	case reflect.Struct:
 		// Handle map[string]interface{} to struct conversion
@@ -897,16 +939,17 @@ func convertArg[T any](val interface{}) T {
 				Result:  &result,
 			})
 			if err != nil {
-				return zero
+				return zero, fmt.Errorf("failed to create decoder for argument %q: %w", argName, err)
 			}
 			if err := decoder.Decode(mapVal); err != nil {
-				return zero
+				return zero, fmt.Errorf("failed to decode argument %q to %s: %w", argName, targetType.Name(), err)
 			}
-			return result
+			return result, nil
 		}
+		return zero, fmt.Errorf("argument %q: expected map[string]interface{} for struct conversion, got %T", argName, val)
 	}
 
-	return zero
+	return zero, fmt.Errorf("cannot convert argument %q from %T to %s", argName, val, targetType.Name())
 }
 
 // GraphQL scalar type constants for use with WithArg

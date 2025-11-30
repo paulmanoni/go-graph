@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/graphql-go/graphql"
@@ -547,6 +548,135 @@ func TestWithResolverArgs_WithStruct(t *testing.T) {
 	if user.Name != "Bob" {
 		t.Errorf("user.Name = %v, want %v", user.Name, "Bob")
 	}
+}
+
+// TestGetE tests GetE[T] with error handling
+func TestGetE(t *testing.T) {
+	t.Run("returns value for existing key", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{
+			"name": "Alice",
+		})
+
+		val, err := GetE[string](args, "name")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if val != "Alice" {
+			t.Errorf("val = %v, want %v", val, "Alice")
+		}
+	})
+
+	t.Run("returns error for missing key", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{})
+
+		_, err := GetE[string](args, "missing")
+		if err == nil {
+			t.Fatal("expected error for missing key")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error message should contain 'not found', got: %v", err)
+		}
+	})
+
+	t.Run("returns error for nil value", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{
+			"name": nil,
+		})
+
+		_, err := GetE[string](args, "name")
+		if err == nil {
+			t.Fatal("expected error for nil value")
+		}
+		if !strings.Contains(err.Error(), "is nil") {
+			t.Errorf("error message should contain 'is nil', got: %v", err)
+		}
+	})
+
+	t.Run("returns error for nil args", func(t *testing.T) {
+		args := NewArgs(nil)
+
+		_, err := GetE[string](args, "name")
+		if err == nil {
+			t.Fatal("expected error for nil args")
+		}
+	})
+
+	t.Run("returns error for type conversion failure", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{
+			"input": []int{1, 2, 3}, // slice cannot convert to struct
+		})
+
+		_, err := GetE[TestUserInput](args, "input")
+		if err == nil {
+			t.Fatal("expected error for type conversion failure")
+		}
+	})
+
+	t.Run("struct conversion success", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{
+			"input": map[string]interface{}{
+				"name":  "Bob",
+				"email": "bob@example.com",
+			},
+		})
+
+		input, err := GetE[TestUserInput](args, "input")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if input.Name != "Bob" {
+			t.Errorf("input.Name = %v, want %v", input.Name, "Bob")
+		}
+	})
+
+	t.Run("struct conversion failure", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{
+			"input": "not a map", // wrong type
+		})
+
+		_, err := GetE[TestUserInput](args, "input")
+		if err == nil {
+			t.Fatal("expected error for invalid struct input")
+		}
+	})
+}
+
+// TestMustGet tests MustGet[T] panic behavior
+func TestMustGet(t *testing.T) {
+	t.Run("returns value for existing key", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{
+			"name": "Alice",
+		})
+
+		val := MustGet[string](args, "name")
+		if val != "Alice" {
+			t.Errorf("val = %v, want %v", val, "Alice")
+		}
+	})
+
+	t.Run("panics for missing key", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic for missing key")
+			}
+		}()
+
+		args := NewArgs(map[string]interface{}{})
+		_ = MustGet[string](args, "missing")
+	})
+
+	t.Run("panics for nil value", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic for nil value")
+			}
+		}()
+
+		args := NewArgs(map[string]interface{}{
+			"name": nil,
+		})
+		_ = MustGet[string](args, "name")
+	})
 }
 
 // TestGet_StructConversion tests Get[T] for struct conversion from map
