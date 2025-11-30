@@ -451,8 +451,8 @@ func TestWithArg_Chaining(t *testing.T) {
 	}
 }
 
-// TestWithResolverArgs tests the WithResolverArgs method
-func TestWithResolverArgs(t *testing.T) {
+// TestWithResolver_ArgsMap tests the WithResolver method with ArgsMap(p.Args)
+func TestWithResolver_ArgsMap(t *testing.T) {
 	type TestUser struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -461,9 +461,9 @@ func TestWithResolverArgs(t *testing.T) {
 	resolver := NewResolver[TestUser]("user").
 		WithArg("id", String).
 		WithArg("name", String).
-		WithResolverArgs(func(p ResolveParams, args Args) (*TestUser, error) {
-			id := Get[string](args, "id")
-			name := Get[string](args, "name")
+		WithResolver(func(p ResolveParams) (*TestUser, error) {
+			id := Get[string](ArgsMap(p.Args), "id")
+			name := Get[string](ArgsMap(p.Args), "name")
 			return &TestUser{ID: id, Name: name}, nil
 		})
 
@@ -498,7 +498,7 @@ func TestWithResolverArgs(t *testing.T) {
 	}
 }
 
-func TestWithResolverArgs_WithStruct(t *testing.T) {
+func TestWithResolver_ArgsMap_WithStruct(t *testing.T) {
 	type TestUser struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -511,9 +511,9 @@ func TestWithResolverArgs_WithStruct(t *testing.T) {
 
 	resolver := NewResolver[TestUser]("createUser").
 		WithArg("input", TestUserInput{}).
-		WithResolverArgs(func(p ResolveParams, args Args) (*TestUser, error) {
-			// Use type-safe Get[T] for struct conversion
-			input := Get[TestUserInput](args, "input")
+		WithResolver(func(p ResolveParams) (*TestUser, error) {
+			// Use type-safe Get[T] for struct conversion with ArgsMap
+			input := Get[TestUserInput](ArgsMap(p.Args), "input")
 			return &TestUser{
 				ID:   "new-id",
 				Name: input.Name,
@@ -870,8 +870,8 @@ func TestIntegration_CompleteResolver(t *testing.T) {
 	queryField := NewResolver[User]("user").
 		WithArg("id", String).
 		WithDescription("Get a user by ID").
-		WithResolverArgs(func(p ResolveParams, args Args) (*User, error) {
-			id := Get[string](args, "id")
+		WithResolver(func(p ResolveParams) (*User, error) {
+			id := Get[string](ArgsMap(p.Args), "id")
 			return &User{
 				ID:    id,
 				Name:  "Test User",
@@ -925,9 +925,8 @@ func TestIntegration_MutationWithInput(t *testing.T) {
 		AsMutation().
 		WithArg("input", CreateUserInput{}).
 		WithDescription("Create a new user").
-		WithResolverArgs(func(p ResolveParams, args Args) (*User, error) {
-			raw := args.Raw()
-			input := raw["input"].(map[string]interface{})
+		WithResolver(func(p ResolveParams) (*User, error) {
+			input := p.Args["input"].(map[string]interface{})
 			return &User{
 				ID:    "new-id",
 				Name:  input["name"].(string),
@@ -994,13 +993,13 @@ func TestWithResolver_UnifiedSignature_WithArgs(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	// Test WithResolver with args signature: func(p ResolveParams, args Args) (*T, error)
+	// Test WithResolver with ArgsMap(p.Args) pattern
 	resolver := NewResolver[TestUser]("user").
 		WithArg("id", String).
 		WithArg("name", String).
-		WithResolver(func(p ResolveParams, args Args) (*TestUser, error) {
-			id := Get[string](args, "id")
-			name := Get[string](args, "name")
+		WithResolver(func(p ResolveParams) (*TestUser, error) {
+			id := Get[string](ArgsMap(p.Args), "id")
+			name := Get[string](ArgsMap(p.Args), "name")
 			return &TestUser{ID: id, Name: name}, nil
 		})
 
@@ -1065,7 +1064,7 @@ func TestWithResolver_UnifiedSignature_Error(t *testing.T) {
 	// Test error return with args
 	resolver2 := NewResolver[TestResult]("test2").
 		WithArg("value", String).
-		WithResolver(func(p ResolveParams, args Args) (*TestResult, error) {
+		WithResolver(func(p ResolveParams) (*TestResult, error) {
 			return nil, context.Canceled
 		})
 
@@ -1120,14 +1119,14 @@ func TestWithResolver_Integration_CompleteFlow(t *testing.T) {
 	delete(typeRegistry, "User")
 	typeRegistryMu.Unlock()
 
-	// Build a complete resolver using the unified WithResolver with args
+	// Build a complete resolver using the unified WithResolver with ArgsMap
 	queryField := NewResolver[User]("user").
 		WithArg("id", String).
 		WithArg("includeEmail", Boolean).
 		WithDescription("Get a user by ID").
-		WithResolver(func(p ResolveParams, args Args) (*User, error) {
-			id := Get[string](args, "id")
-			includeEmail := GetOr[bool](args, "includeEmail", false)
+		WithResolver(func(p ResolveParams) (*User, error) {
+			id := Get[string](ArgsMap(p.Args), "id")
+			includeEmail := GetOr[bool](ArgsMap(p.Args), "includeEmail", false)
 
 			email := ""
 			if includeEmail {
@@ -1319,8 +1318,8 @@ func BenchmarkWithResolver(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			_ = NewResolver[Result]("test").
 				WithArg("id", String).
-				WithResolver(func(p ResolveParams, args Args) (*Result, error) {
-					id := Get[string](args, "id")
+				WithResolver(func(p ResolveParams) (*Result, error) {
+					id := Get[string](ArgsMap(p.Args), "id")
 					return &Result{ID: id}, nil
 				})
 		}
@@ -1338,9 +1337,9 @@ func BenchmarkResolverExecution(b *testing.B) {
 	resolver := NewResolver[User]("user").
 		WithArg("id", String).
 		WithArg("name", String).
-		WithResolver(func(p ResolveParams, args Args) (*User, error) {
-			id := Get[string](args, "id")
-			name := Get[string](args, "name")
+		WithResolver(func(p ResolveParams) (*User, error) {
+			id := Get[string](ArgsMap(p.Args), "id")
+			name := Get[string](ArgsMap(p.Args), "name")
 			return &User{ID: id, Name: name}, nil
 		})
 

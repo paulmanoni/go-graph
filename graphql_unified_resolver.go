@@ -692,25 +692,21 @@ func createPageInfoType() *graphql.Object {
 // WithResolver sets a type-safe resolver function that returns *T instead of interface{}
 // This provides better type safety and eliminates the need for type assertions or casts.
 //
-// WithResolver supports two function signatures:
-//   - func(p ResolveParams) (*T, error) - for resolvers without arguments
-//   - func(p ResolveParams, args Args) (*T, error) - for resolvers with arguments
+// WithResolver requires the function signature:
+//   - func(p ResolveParams) (*T, error)
+//
+// Access arguments using type-safe getter functions with ArgsMap:
+//   - Get[T](ArgsMap(p.Args), "key") - returns zero value if not found
+//   - GetE[T](ArgsMap(p.Args), "key") - returns error if not found
+//   - GetOr[T](ArgsMap(p.Args), "key", defaultVal) - returns default if not found
+//   - MustGet[T](ArgsMap(p.Args), "key") - panics if not found
 //
 // Example usage:
 //
-//	// Without args
-//	NewResolver[User]("user").
-//		WithResolver(func(p graph.ResolveParams) (*User, error) {
-//			id, _ := GetArgInt(p, "id")
-//			return userService.GetByID(id)
-//		}).BuildQuery()
-//
-//	// With args (using chained WithArg)
 //	NewResolver[User]("user").
 //		WithArg("id", graph.String).
-//		WithArg("limit", graph.Int).
-//		WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
-//			id := graph.Get[string](args, "id")
+//		WithResolver(func(p graph.ResolveParams) (*User, error) {
+//			id := graph.Get[string](graph.ArgsMap(p.Args), "id")
 //			return userService.GetByID(id)
 //		}).BuildQuery()
 //
@@ -726,37 +722,15 @@ func createPageInfoType() *graphql.Object {
 //			msg := "Hello, World!"
 //			return &msg, nil
 //		}).BuildQuery()
-func (r *UnifiedResolver[T]) WithResolver(resolver interface{}) *UnifiedResolver[T] {
-	resolverValue := reflect.ValueOf(resolver)
-	resolverType := resolverValue.Type()
-
-	if resolverType.Kind() != reflect.Func {
-		panic("WithResolver: resolver must be a function")
-	}
-
-	numIn := resolverType.NumIn()
-
-	switch numIn {
-	case 1:
-		// func(p ResolveParams) (*T, error)
-		r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-			results := resolverValue.Call([]reflect.Value{reflect.ValueOf(ResolveParams(p))})
-			return extractResolverResults(results)
+func (r *UnifiedResolver[T]) WithResolver(resolver func(ResolveParams) (*T, error)) *UnifiedResolver[T] {
+	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
+		result, err := resolver(ResolveParams(p))
+		// Handle typed nil - return untyped nil for interface compatibility
+		if result == nil {
+			return nil, err
 		}
-	case 2:
-		// func(p ResolveParams, args Args) (*T, error)
-		r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-			args := NewArgs(p.Args)
-			results := resolverValue.Call([]reflect.Value{
-				reflect.ValueOf(ResolveParams(p)),
-				reflect.ValueOf(args),
-			})
-			return extractResolverResults(results)
-		}
-	default:
-		panic(fmt.Sprintf("WithResolver: unsupported function signature with %d parameters", numIn))
+		return result, err
 	}
-
 	return r
 }
 
@@ -1032,8 +1006,8 @@ var (
 //		WithArg("id", "").           // string
 //		WithArg("limit", 0).         // int
 //		WithArg("active", false).    // bool
-//		WithResolverArgs(func(p ResolveParams, args Args) (*User, error) {
-//			id := Get[string](args, "id")
+//		WithResolver(func(p ResolveParams) (*User, error) {
+//			id := Get[string](ArgsMap(p.Args), "id")
 //			return userService.GetByID(id)
 //		})
 //
@@ -1049,8 +1023,8 @@ var (
 //
 //	NewResolver[User]("createUser").
 //		WithArg("input", UserInput{}).
-//		WithResolverArgs(func(p ResolveParams, args Args) (*User, error) {
-//			input := Get[UserInput](args, "input")
+//		WithResolver(func(p ResolveParams) (*User, error) {
+//			input := Get[UserInput](ArgsMap(p.Args), "input")
 //			return userService.Create(input)
 //		})
 func (r *UnifiedResolver[T]) WithArg(name string, argType interface{}) *UnifiedResolver[T] {
@@ -1175,23 +1149,6 @@ func resolveInputType(argType interface{}, argName string) graphql.Input {
 	}
 
 	return nil
-}
-
-// WithResolverArgs sets a resolver that receives both ResolveParams and Args
-// This supports the optional args pattern:
-//
-//	NewResolver[User]("user").
-//		WithArg("id", graph.String).
-//		WithResolverArgs(func(p ResolveParams, args Args) (*User, error) {
-//			id := Get[string](args, "id")
-//			return userService.GetByID(id)
-//		})
-func (r *UnifiedResolver[T]) WithResolverArgs(resolver func(p ResolveParams, args Args) (*T, error)) *UnifiedResolver[T] {
-	r.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-		args := NewArgs(p.Args)
-		return resolver(ResolveParams(p), args)
-	}
-	return r
 }
 
 // TypedArgsResolver provides type-safe argument handling
