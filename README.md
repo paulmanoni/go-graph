@@ -89,13 +89,9 @@ func getHello() graph.QueryField {
 
 func getUser() graph.QueryField {
     return graph.NewResolver[User]("user").
-        WithArgs(graphql.FieldConfigArgument{
-            "id": &graphql.ArgumentConfig{
-                Type: graphql.String,
-            },
-        }).
-        WithResolver(func(p graph.ResolveParams) (*User, error) {
-            id, _ := graph.GetArgString(p, "id")
+        WithArg("id", graph.String).
+        WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+            id := graph.Get[string](args, "id")
             return &User{ID: id, Name: "Alice"}, nil
         }).BuildQuery()
 }
@@ -888,23 +884,6 @@ ValidationRules: graph.DefaultValidationRules()
 
 ## Helper Functions
 
-### Extracting Arguments
-
-```go
-// String argument
-name, err := graph.GetArgString(p, "name")
-
-// Int argument
-age, err := graph.GetArgInt(p, "age")
-
-// Bool argument
-active, err := graph.GetArgBool(p, "active")
-
-// Complex type
-var input CreateUserInput
-err := graph.GetArg(p, "input", &input)
-```
-
 ### Accessing Root Values
 
 ```go
@@ -983,8 +962,9 @@ The `WithResolver` method provides compile-time type safety by accepting a funct
 ```go
 // ✅ Type-safe - returns *User
 graph.NewResolver[User]("user").
-    WithResolver(func(p graph.ResolveParams) (*User, error) {
-        id, _ := graph.GetArgString(p, "id")
+    WithArg("id", graph.String).
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[string](args, "id")
         user := db.GetUserByID(id)  // Most ORMs return *User
         return user, nil             // No type assertions needed!
     }).BuildQuery()
@@ -1024,14 +1004,9 @@ type Post struct {
 // Type-safe query
 func getPost() graph.QueryField {
     return graph.NewResolver[Post]("post").
-        WithArgs(graphql.FieldConfigArgument{
-            "id": &graphql.ArgumentConfig{Type: graphql.Int},
-        }).
-        WithResolver(func(p graph.ResolveParams) (*Post, error) {
-            id, err := graph.GetArgInt(p, "id")
-            if err != nil {
-                return nil, err
-            }
+        WithArg("id", graph.Int).
+        WithResolver(func(p graph.ResolveParams, args graph.Args) (*Post, error) {
+            id := graph.Get[int](args, "id")
 
             post, err := postService.GetByID(id)
             if err != nil {
@@ -1202,6 +1177,35 @@ if args.Has("optionalField") {
 // Get raw map for complex processing (if needed)
 rawArgs := args.Raw()
 ```
+
+### Using Args with Subscriptions and Custom Resolvers (ArgsMap)
+
+When using subscriptions or custom resolvers that receive `p.Args` directly (a `map[string]interface{}`), you can use `graph.ArgsMap` to wrap it and use the same type-safe getter functions:
+
+```go
+// In subscriptions or custom resolvers with graphql.FieldConfigArgument
+subscription := graph.NewSubscription[Message]("onMessage").
+    WithField("channelID", graphql.String).
+    WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Message, error) {
+        // Wrap p.Args with ArgsMap to use type-safe getters
+        channelID := graph.Get[string](graph.ArgsMap(p.Args), "channelID")
+
+        // Or with error handling
+        channelID, err := graph.GetE[string](graph.ArgsMap(p.Args), "channelID")
+        if err != nil {
+            return nil, fmt.Errorf("channelID required: %w", err)
+        }
+
+        // ... create and return channel
+    })
+```
+
+Both `graph.Args` (from `WithArg` chainable API) and `graph.ArgsMap` (wrapping `p.Args`) implement the `ArgsGetter` interface, so all getter functions work with both:
+
+| Source | Usage | When to Use |
+|--------|-------|-------------|
+| `graph.Args` | `graph.Get[T](args, "key")` | With `WithResolver(func(p, args)...)` |
+| `graph.ArgsMap(p.Args)` | `graph.Get[T](graph.ArgsMap(p.Args), "key")` | Subscriptions, middlewares, custom resolvers |
 
 ### Error Handling Options
 
@@ -1378,10 +1382,11 @@ Apply middleware to the entire resolver using `WithMiddleware()`. Middleware fun
 
 ```go
 graph.NewResolver[User]("user").
+    WithArg("id", graph.Int).
     WithMiddleware(graph.LoggingMiddleware).
     WithMiddleware(graph.AuthMiddleware("admin")).
-    WithResolver(func(p graph.ResolveParams) (*User, error) {
-        id, _ := graph.GetArgInt(p, "id")
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[int](args, "id")
         return userService.GetByID(id)
     }).BuildQuery()
 ```
@@ -1427,13 +1432,14 @@ Caches resolver results based on a custom key function:
 
 ```go
 graph.NewResolver[Product]("product").
+    WithArg("id", graph.Int).
     WithMiddleware(graph.CacheMiddleware(func(p graph.ResolveParams) string {
-        id, _ := graph.GetArgInt(p, "id")
+        id := graph.Get[int](graph.ArgsMap(p.Args), "id")
         return fmt.Sprintf("product:%d", id)
     })).
-    WithResolver(func(p graph.ResolveParams) (*Product, error) {
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*Product, error) {
         // Only executes on cache miss
-        id, _ := graph.GetArgInt(p, "id")
+        id := graph.Get[int](args, "id")
         return productService.GetByID(id)
     }).BuildQuery()
 ```
@@ -1515,9 +1521,10 @@ graph.NewResolver[User]("users").
 ```go
 graph.NewResolver[User]("deleteUser").
     AsMutation().
+    WithArg("id", graph.Int).
     WithPermission(graph.AuthMiddleware("admin")).
-    WithResolver(func(p graph.ResolveParams) (*User, error) {
-        id, _ := graph.GetArgInt(p, "id")
+    WithResolver(func(p graph.ResolveParams, args graph.Args) (*User, error) {
+        id := graph.Get[int](args, "id")
         return userService.Delete(id)
     }).BuildMutation()
 ```
@@ -1641,7 +1648,7 @@ func main() {
             },
         }).
         WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *MessageEvent, error) {
-            channelID, _ := graph.GetArgString(p, "channelID")
+            channelID := graph.Get[string](graph.ArgsMap(p.Args), "channelID")
 
             // Create output channel
             events := make(chan *MessageEvent, 10)
@@ -1821,7 +1828,7 @@ func messageSubscription(pubsub graph.PubSub) graph.SubscriptionField {
             },
         }).
         WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Message, error) {
-            channelID, _ := graph.GetArgString(p, "channelID")
+            channelID := graph.Get[string](graph.ArgsMap(p.Args), "channelID")
 
             events := make(chan *Message, 10)
             subscription := pubsub.Subscribe(ctx, "messages:"+channelID)
@@ -1869,7 +1876,7 @@ func messageSubscription(pubsub graph.PubSub) graph.SubscriptionField {
         }).
         WithFilter(func(ctx context.Context, data *Message, p graph.ResolveParams) bool {
             // Filter by channel ID
-            channelID, _ := graph.GetArgString(p, "channelID")
+            channelID := graph.Get[string](graph.ArgsMap(p.Args), "channelID")
             return data.ChannelID == channelID
         }).
         BuildSubscription()
@@ -2112,9 +2119,9 @@ Handle errors gracefully in subscription resolvers:
 
 ```go
 WithResolver(func(ctx context.Context, p graph.ResolveParams) (<-chan *Event, error) {
-    // Validate arguments first
-    channelID, err := graph.GetArgString(p, "channelID")
-    if err != nil {
+    // Validate arguments first using type-safe API
+    channelID, err := graph.GetE[string](graph.ArgsMap(p.Args), "channelID")
+    if err != nil || channelID == "" {
         return nil, fmt.Errorf("channelID required")
     }
 
@@ -2413,9 +2420,9 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 |-----------|---------|-------------|-------------|
 | Token Extraction | ~31 ns | 0 allocs | Bearer token from header |
 | Type Registration | ~14 ns | 0 allocs | Object type caching |
-| GetArgString | ~10 ns | 0 allocs | Extract string argument |
-| GetArgInt | ~10 ns | 0 allocs | Extract int argument |
-| GetArgBool | ~10 ns | 0 allocs | Extract bool argument |
+| Get[string] | ~10 ns | 0 allocs | Extract string argument |
+| Get[int] | ~10 ns | 0 allocs | Extract int argument |
+| Get[bool] | ~10 ns | 0 allocs | Extract bool argument |
 | GetRootString | ~10 ns | 0 allocs | Extract root string value |
 
 #### Schema Building

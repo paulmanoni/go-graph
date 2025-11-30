@@ -797,6 +797,14 @@ func (r *UnifiedResolver[T]) WithMiddleware(middleware FieldMiddleware) *Unified
 	return r
 }
 
+// ArgsGetter is an interface for types that can provide arguments by name.
+// This allows Get[T], GetE[T], GetOr[T], and MustGet[T] to work with both:
+//   - graph.Args (from WithArg chainable API)
+//   - graph.ArgsMap (from graphql.FieldConfigArgument / p.Args)
+type ArgsGetter interface {
+	GetArg(name string) (interface{}, bool)
+}
+
 // Args provides type-safe access to GraphQL arguments
 type Args struct {
 	raw map[string]interface{}
@@ -812,16 +820,51 @@ func (a Args) Raw() map[string]interface{} {
 	return a.raw
 }
 
+// GetArg implements ArgsGetter interface
+func (a Args) GetArg(name string) (interface{}, bool) {
+	if a.raw == nil {
+		return nil, false
+	}
+	val, exists := a.raw[name]
+	return val, exists
+}
+
 // Has checks if an argument exists
 func (a Args) Has(name string) bool {
 	_, exists := a.raw[name]
 	return exists
 }
 
+// ArgsMap wraps map[string]interface{} to implement ArgsGetter.
+// This allows using p.Args directly with Get[T], GetE[T], etc.
+//
+// Usage:
+//
+//	// In subscription resolvers with graphql.FieldConfigArgument
+//	channelID := graph.Get[string](graph.ArgsMap(p.Args), "channelID")
+type ArgsMap map[string]interface{}
+
+// GetArg implements ArgsGetter interface
+func (m ArgsMap) GetArg(name string) (interface{}, bool) {
+	if m == nil {
+		return nil, false
+	}
+	val, exists := m[name]
+	return val, exists
+}
+
 // Get retrieves an argument by name with type safety.
 // Returns zero value if key is missing or conversion fails.
 // Use GetE for explicit error handling.
-func Get[T any](a Args, name string) T {
+//
+// Works with both graph.Args (from WithArg) and graph.ArgsMap (from p.Args):
+//
+//	// With graph.Args (from WithArg chainable API)
+//	id := graph.Get[string](args, "id")
+//
+//	// With p.Args (from graphql.FieldConfigArgument)
+//	channelID := graph.Get[string](graph.ArgsMap(p.Args), "channelID")
+func Get[T any](a ArgsGetter, name string) T {
 	val, _ := GetE[T](a, name)
 	return val
 }
@@ -829,18 +872,19 @@ func Get[T any](a Args, name string) T {
 // GetE retrieves an argument by name with type safety and error handling.
 // Returns an error if the key is missing or type conversion fails.
 //
-// Usage:
+// Works with both graph.Args and graph.ArgsMap (p.Args):
 //
+//	// With graph.Args
 //	input, err := graph.GetE[UserInput](args, "input")
-//	if err != nil {
-//	    return nil, fmt.Errorf("invalid input: %w", err)
-//	}
-func GetE[T any](a Args, name string) (T, error) {
+//
+//	// With p.Args
+//	channelID, err := graph.GetE[string](graph.ArgsMap(p.Args), "channelID")
+func GetE[T any](a ArgsGetter, name string) (T, error) {
 	var zero T
-	if a.raw == nil {
+	if a == nil {
 		return zero, fmt.Errorf("argument %q not found: args is nil", name)
 	}
-	val, exists := a.raw[name]
+	val, exists := a.GetArg(name)
 	if !exists {
 		return zero, fmt.Errorf("argument %q not found", name)
 	}
@@ -860,7 +904,9 @@ func GetE[T any](a Args, name string) (T, error) {
 // MustGet retrieves an argument by name with type safety.
 // Panics if the key is missing or conversion fails.
 // Use only when you're certain the argument exists and is valid.
-func MustGet[T any](a Args, name string) T {
+//
+// Works with both graph.Args and graph.ArgsMap (p.Args).
+func MustGet[T any](a ArgsGetter, name string) T {
 	val, err := GetE[T](a, name)
 	if err != nil {
 		panic(fmt.Sprintf("MustGet failed: %v", err))
@@ -868,12 +914,20 @@ func MustGet[T any](a Args, name string) T {
 	return val
 }
 
-// GetOr retrieves an argument by name with a default value if not found
-func GetOr[T any](a Args, name string, defaultVal T) T {
-	if a.raw == nil {
+// GetOr retrieves an argument by name with a default value if not found.
+//
+// Works with both graph.Args and graph.ArgsMap (p.Args):
+//
+//	// With graph.Args
+//	limit := graph.GetOr[int](args, "limit", 10)
+//
+//	// With p.Args
+//	limit := graph.GetOr[int](graph.ArgsMap(p.Args), "limit", 10)
+func GetOr[T any](a ArgsGetter, name string, defaultVal T) T {
+	if a == nil {
 		return defaultVal
 	}
-	val, exists := a.raw[name]
+	val, exists := a.GetArg(name)
 	if !exists {
 		return defaultVal
 	}

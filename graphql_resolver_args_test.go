@@ -1424,3 +1424,386 @@ func BenchmarkResolveInputType(b *testing.B) {
 		}
 	})
 }
+
+// ============================================================
+// ArgsMap Tests - Testing unified ArgsGetter interface
+// ============================================================
+
+// TestArgsMap_Get tests Get[T] with ArgsMap (p.Args wrapper)
+func TestArgsMap_Get(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      map[string]interface{}
+		key      string
+		wantStr  string
+		wantInt  int
+		wantBool bool
+	}{
+		{
+			name:    "get string value",
+			raw:     map[string]interface{}{"name": "Alice"},
+			key:     "name",
+			wantStr: "Alice",
+		},
+		{
+			name:    "get int value",
+			raw:     map[string]interface{}{"age": 25},
+			key:     "age",
+			wantInt: 25,
+		},
+		{
+			name:    "get bool value",
+			raw:     map[string]interface{}{"active": true},
+			key:     "active",
+			wantBool: true,
+		},
+		{
+			name:    "get missing value returns zero",
+			raw:     map[string]interface{}{},
+			key:     "missing",
+			wantStr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			argsMap := ArgsMap(tt.raw)
+
+			if tt.wantStr != "" || tt.key == "name" || tt.key == "missing" {
+				got := Get[string](argsMap, tt.key)
+				if got != tt.wantStr {
+					t.Errorf("Get[string](ArgsMap) = %v, want %v", got, tt.wantStr)
+				}
+			}
+			if tt.wantInt != 0 {
+				got := Get[int](argsMap, tt.key)
+				if got != tt.wantInt {
+					t.Errorf("Get[int](ArgsMap) = %v, want %v", got, tt.wantInt)
+				}
+			}
+			if tt.wantBool {
+				got := Get[bool](argsMap, tt.key)
+				if got != tt.wantBool {
+					t.Errorf("Get[bool](ArgsMap) = %v, want %v", got, tt.wantBool)
+				}
+			}
+		})
+	}
+}
+
+// TestArgsMap_GetOr tests GetOr[T] with ArgsMap
+func TestArgsMap_GetOr(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        map[string]interface{}
+		key        string
+		defaultVal string
+		want       string
+	}{
+		{
+			name:       "returns value when present",
+			raw:        map[string]interface{}{"name": "Alice"},
+			key:        "name",
+			defaultVal: "default",
+			want:       "Alice",
+		},
+		{
+			name:       "returns default when missing",
+			raw:        map[string]interface{}{},
+			key:        "name",
+			defaultVal: "default",
+			want:       "default",
+		},
+		{
+			name:       "returns default when nil map",
+			raw:        nil,
+			key:        "name",
+			defaultVal: "default",
+			want:       "default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			argsMap := ArgsMap(tt.raw)
+			got := GetOr[string](argsMap, tt.key, tt.defaultVal)
+			if got != tt.want {
+				t.Errorf("GetOr(ArgsMap) = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestArgsMap_GetE tests GetE[T] with ArgsMap
+func TestArgsMap_GetE(t *testing.T) {
+	t.Run("valid string", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{"name": "Alice"})
+		val, err := GetE[string](argsMap, "name")
+		if err != nil {
+			t.Errorf("GetE(ArgsMap) unexpected error: %v", err)
+		}
+		if val != "Alice" {
+			t.Errorf("GetE(ArgsMap) = %v, want Alice", val)
+		}
+	})
+
+	t.Run("missing key", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{})
+		_, err := GetE[string](argsMap, "missing")
+		if err == nil {
+			t.Error("GetE(ArgsMap) expected error for missing key")
+		}
+	})
+
+	t.Run("wrong type", func(t *testing.T) {
+		// Use a type that truly cannot be converted (slice to string)
+		argsMap := ArgsMap(map[string]interface{}{"name": []int{1, 2, 3}})
+		_, err := GetE[string](argsMap, "name")
+		if err == nil {
+			t.Error("GetE(ArgsMap) expected error for wrong type")
+		}
+	})
+
+	t.Run("nil map", func(t *testing.T) {
+		argsMap := ArgsMap(nil)
+		_, err := GetE[string](argsMap, "name")
+		if err == nil {
+			t.Error("GetE(ArgsMap) expected error for nil map")
+		}
+	})
+}
+
+// TestArgsMap_MustGet tests MustGet[T] with ArgsMap
+func TestArgsMap_MustGet(t *testing.T) {
+	t.Run("valid value", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{"name": "Alice"})
+		val := MustGet[string](argsMap, "name")
+		if val != "Alice" {
+			t.Errorf("MustGet(ArgsMap) = %v, want Alice", val)
+		}
+	})
+
+	t.Run("missing key panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("MustGet(ArgsMap) expected panic for missing key")
+			}
+		}()
+		argsMap := ArgsMap(map[string]interface{}{})
+		_ = MustGet[string](argsMap, "missing")
+	})
+
+	t.Run("wrong type panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("MustGet(ArgsMap) expected panic for wrong type")
+			}
+		}()
+		// Use a type that truly cannot be converted (slice to string)
+		argsMap := ArgsMap(map[string]interface{}{"name": []int{1, 2, 3}})
+		_ = MustGet[string](argsMap, "name")
+	})
+}
+
+// TestArgsMap_GetArg tests GetArg method directly
+func TestArgsMap_GetArg(t *testing.T) {
+	t.Run("existing key", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{"id": "123"})
+		val, exists := argsMap.GetArg("id")
+		if !exists {
+			t.Error("GetArg should return true for existing key")
+		}
+		if val != "123" {
+			t.Errorf("GetArg = %v, want 123", val)
+		}
+	})
+
+	t.Run("missing key", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{})
+		_, exists := argsMap.GetArg("missing")
+		if exists {
+			t.Error("GetArg should return false for missing key")
+		}
+	})
+
+	t.Run("nil map", func(t *testing.T) {
+		argsMap := ArgsMap(nil)
+		_, exists := argsMap.GetArg("any")
+		if exists {
+			t.Error("GetArg should return false for nil map")
+		}
+	})
+}
+
+// TestArgsMap_StructConversion tests Get[T] struct conversion with ArgsMap
+func TestArgsMap_StructConversion(t *testing.T) {
+	t.Run("convert map to struct", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{
+			"input": map[string]interface{}{
+				"name":  "Alice",
+				"email": "alice@example.com",
+			},
+		})
+		input := Get[TestUserInput](argsMap, "input")
+		if input.Name != "Alice" {
+			t.Errorf("Get[TestUserInput](ArgsMap).Name = %v, want Alice", input.Name)
+		}
+		if input.Email != "alice@example.com" {
+			t.Errorf("Get[TestUserInput](ArgsMap).Email = %v, want alice@example.com", input.Email)
+		}
+	})
+}
+
+// TestArgsMap_TypeConversion tests type conversions (float64 to int, etc.)
+func TestArgsMap_TypeConversion(t *testing.T) {
+	t.Run("float64 to int", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{"num": float64(42)})
+		got := Get[int](argsMap, "num")
+		if got != 42 {
+			t.Errorf("Get[int](ArgsMap) with float64 = %v, want 42", got)
+		}
+	})
+
+	t.Run("int to float64", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{"num": 42})
+		got := Get[float64](argsMap, "num")
+		if got != float64(42) {
+			t.Errorf("Get[float64](ArgsMap) with int = %v, want 42.0", got)
+		}
+	})
+}
+
+// TestArgsGetter_Unified tests that both Args and ArgsMap work with same function
+func TestArgsGetter_Unified(t *testing.T) {
+	// Helper function that accepts ArgsGetter interface
+	extractID := func(a ArgsGetter) string {
+		return Get[string](a, "id")
+	}
+
+	t.Run("with Args", func(t *testing.T) {
+		args := NewArgs(map[string]interface{}{"id": "123"})
+		id := extractID(args)
+		if id != "123" {
+			t.Errorf("extractID(Args) = %v, want 123", id)
+		}
+	})
+
+	t.Run("with ArgsMap", func(t *testing.T) {
+		argsMap := ArgsMap(map[string]interface{}{"id": "456"})
+		id := extractID(argsMap)
+		if id != "456" {
+			t.Errorf("extractID(ArgsMap) = %v, want 456", id)
+		}
+	})
+}
+
+// ============================================================
+// ArgsMap Benchmarks
+// ============================================================
+
+// BenchmarkArgsMap_Get benchmarks Get[T] with ArgsMap
+func BenchmarkArgsMap_Get(b *testing.B) {
+	raw := map[string]interface{}{
+		"id":     "123",
+		"name":   "Alice",
+		"age":    25,
+		"active": true,
+	}
+	argsMap := ArgsMap(raw)
+
+	b.Run("get_string", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = Get[string](argsMap, "name")
+		}
+	})
+
+	b.Run("get_int", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = Get[int](argsMap, "age")
+		}
+	})
+
+	b.Run("get_bool", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = Get[bool](argsMap, "active")
+		}
+	})
+
+	b.Run("get_missing", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = Get[string](argsMap, "missing")
+		}
+	})
+}
+
+// BenchmarkArgsMap_GetOr benchmarks GetOr[T] with ArgsMap
+func BenchmarkArgsMap_GetOr(b *testing.B) {
+	argsMap := ArgsMap(map[string]interface{}{"name": "Alice"})
+
+	b.Run("existing_key", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = GetOr[string](argsMap, "name", "default")
+		}
+	})
+
+	b.Run("missing_key", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = GetOr[string](argsMap, "missing", "default")
+		}
+	})
+}
+
+// BenchmarkArgsMap_GetE benchmarks GetE[T] with ArgsMap
+func BenchmarkArgsMap_GetE(b *testing.B) {
+	argsMap := ArgsMap(map[string]interface{}{"name": "Alice"})
+
+	b.Run("valid_key", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _ = GetE[string](argsMap, "name")
+		}
+	})
+
+	b.Run("missing_key", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _ = GetE[string](argsMap, "missing")
+		}
+	})
+}
+
+// BenchmarkArgsMap_Creation benchmarks ArgsMap creation
+func BenchmarkArgsMap_Creation(b *testing.B) {
+	raw := map[string]interface{}{
+		"id":     "123",
+		"name":   "Alice",
+		"age":    25,
+		"active": true,
+	}
+
+	b.Run("create_argsmap", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = ArgsMap(raw)
+		}
+	})
+}
+
+// BenchmarkArgsGetter_Comparison compares Args vs ArgsMap performance
+func BenchmarkArgsGetter_Comparison(b *testing.B) {
+	raw := map[string]interface{}{
+		"id":   "123",
+		"name": "Alice",
+	}
+
+	b.Run("Args_Get", func(b *testing.B) {
+		args := NewArgs(raw)
+		for i := 0; i < b.N; i++ {
+			_ = Get[string](args, "name")
+		}
+	})
+
+	b.Run("ArgsMap_Get", func(b *testing.B) {
+		argsMap := ArgsMap(raw)
+		for i := 0; i < b.N; i++ {
+			_ = Get[string](argsMap, "name")
+		}
+	})
+}
