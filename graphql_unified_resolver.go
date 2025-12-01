@@ -827,6 +827,140 @@ func (m ArgsMap) GetArg(name string) (interface{}, bool) {
 	return val, exists
 }
 
+// RootInfoGetter is an interface for types that can provide root value data by name.
+// This allows GetRoot[T], GetRootE[T], GetRootOr[T], and MustGetRoot[T] to work with
+// root value data extracted from ResolveParams.
+type RootInfoGetter interface {
+	GetRootValue(name string) (interface{}, bool)
+}
+
+// RootInfo wraps map[string]interface{} to implement RootInfoGetter.
+// This allows using p.Info.RootValue with type-safe generic functions.
+//
+// Usage:
+//
+//	// Extract user details from root value
+//	user := graph.GetRoot[UserDetails](graph.NewRootInfo(p), "details")
+//
+//	// With error handling
+//	user, err := graph.GetRootE[UserDetails](graph.NewRootInfo(p), "details")
+//
+//	// With default value
+//	token := graph.GetRootOr[string](graph.NewRootInfo(p), "token", "")
+type RootInfo map[string]interface{}
+
+// GetRootValue implements RootInfoGetter interface
+func (r RootInfo) GetRootValue(name string) (interface{}, bool) {
+	if r == nil {
+		return nil, false
+	}
+	val, exists := r[name]
+	return val, exists
+}
+
+// NewRootInfo extracts RootInfo from ResolveParams.
+// Returns nil if RootValue is nil or not a map[string]interface{}.
+//
+// Usage:
+//
+//	rootInfo := graph.NewRootInfo(p)
+//	user := graph.GetRoot[UserDetails](rootInfo, "details")
+func NewRootInfo(p ResolveParams) RootInfo {
+	if p.Info.RootValue == nil {
+		return nil
+	}
+	if rootMap, ok := p.Info.RootValue.(map[string]interface{}); ok {
+		return RootInfo(rootMap)
+	}
+	return nil
+}
+
+// GetRoot retrieves a value from root info by name with type safety.
+// Returns zero value if key is missing or conversion fails.
+// Use GetRootE for explicit error handling.
+//
+// Usage:
+//
+//	user := graph.GetRoot[UserDetails](graph.NewRootInfo(p), "details")
+//	token := graph.GetRoot[string](graph.NewRootInfo(p), "token")
+func GetRoot[T any](r RootInfoGetter, name string) T {
+	val, _ := GetRootE[T](r, name)
+	return val
+}
+
+// GetRootE retrieves a value from root info by name with type safety and error handling.
+// Returns an error if the key is missing or type conversion fails.
+//
+// Usage:
+//
+//	user, err := graph.GetRootE[UserDetails](graph.NewRootInfo(p), "details")
+//	if err != nil {
+//	    return nil, fmt.Errorf("authentication required: %w", err)
+//	}
+func GetRootE[T any](r RootInfoGetter, name string) (T, error) {
+	var zero T
+	if r == nil {
+		return zero, fmt.Errorf("root value %q not found: root info is nil", name)
+	}
+	val, exists := r.GetRootValue(name)
+	if !exists {
+		return zero, fmt.Errorf("root value %q not found", name)
+	}
+	if val == nil {
+		return zero, fmt.Errorf("root value %q is nil", name)
+	}
+	if typed, ok := val.(T); ok {
+		return typed, nil
+	}
+	result, err := convertArgE[T](val, name)
+	if err != nil {
+		return zero, fmt.Errorf("root value %q: %w", name, err)
+	}
+	return result, nil
+}
+
+// MustGetRoot retrieves a value from root info by name with type safety.
+// Panics if the key is missing or conversion fails.
+// Use only when you're certain the value exists and is valid.
+//
+// Usage:
+//
+//	user := graph.MustGetRoot[UserDetails](graph.NewRootInfo(p), "details")
+func MustGetRoot[T any](r RootInfoGetter, name string) T {
+	val, err := GetRootE[T](r, name)
+	if err != nil {
+		panic(fmt.Sprintf("MustGetRoot failed: %v", err))
+	}
+	return val
+}
+
+// GetRootOr retrieves a value from root info by name with a default value if not found.
+//
+// Usage:
+//
+//	token := graph.GetRootOr[string](graph.NewRootInfo(p), "token", "anonymous")
+//	userID := graph.GetRootOr[int](graph.NewRootInfo(p), "userID", 0)
+func GetRootOr[T any](r RootInfoGetter, name string, defaultVal T) T {
+	if r == nil {
+		return defaultVal
+	}
+	val, exists := r.GetRootValue(name)
+	if !exists {
+		return defaultVal
+	}
+	if val == nil {
+		return defaultVal
+	}
+	if typed, ok := val.(T); ok {
+		return typed
+	}
+	result, err := convertArgE[T](val, name)
+	if err != nil {
+		return defaultVal
+	}
+	return result
+}
+
 // Get retrieves an argument by name with type safety.
 // Returns zero value if key is missing or conversion fails.
 // Use GetE for explicit error handling.

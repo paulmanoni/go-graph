@@ -322,6 +322,159 @@ func TestGetRootInfo(t *testing.T) {
 	}
 }
 
+func TestGetRoot(t *testing.T) {
+	type UserDetails struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	t.Run("GetRoot with string", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{
+					"token": "abc123",
+				},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := GetRoot[string](rootInfo, "token")
+		if got != "abc123" {
+			t.Errorf("GetRoot[string]() = %v, want %v", got, "abc123")
+		}
+	})
+
+	t.Run("GetRoot with missing key returns zero value", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := GetRoot[string](rootInfo, "token")
+		if got != "" {
+			t.Errorf("GetRoot[string]() = %v, want empty string", got)
+		}
+	})
+
+	t.Run("GetRoot with struct", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{
+					"details": map[string]interface{}{
+						"id":   float64(1),
+						"name": "John",
+					},
+				},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := GetRoot[UserDetails](rootInfo, "details")
+		want := UserDetails{ID: 1, Name: "John"}
+		if got != want {
+			t.Errorf("GetRoot[UserDetails]() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("GetRootE with error", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		_, err := GetRootE[string](rootInfo, "missing")
+		if err == nil {
+			t.Error("GetRootE() expected error for missing key")
+		}
+	})
+
+	t.Run("GetRootE with nil root info", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: nil,
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		_, err := GetRootE[string](rootInfo, "token")
+		if err == nil {
+			t.Error("GetRootE() expected error for nil root info")
+		}
+	})
+
+	t.Run("GetRootOr with default value", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := GetRootOr[string](rootInfo, "token", "default")
+		if got != "default" {
+			t.Errorf("GetRootOr[string]() = %v, want %v", got, "default")
+		}
+	})
+
+	t.Run("GetRootOr with existing value", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{
+					"token": "actual",
+				},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := GetRootOr[string](rootInfo, "token", "default")
+		if got != "actual" {
+			t.Errorf("GetRootOr[string]() = %v, want %v", got, "actual")
+		}
+	})
+
+	t.Run("MustGetRoot panics on missing key", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("MustGetRoot() expected panic for missing key")
+			}
+		}()
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		_ = MustGetRoot[string](rootInfo, "missing")
+	})
+
+	t.Run("MustGetRoot succeeds with valid key", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{
+					"token": "valid",
+				},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := MustGetRoot[string](rootInfo, "token")
+		if got != "valid" {
+			t.Errorf("MustGetRoot[string]() = %v, want %v", got, "valid")
+		}
+	})
+
+	t.Run("GetRoot with int conversion", func(t *testing.T) {
+		params := graphql.ResolveParams{
+			Info: graphql.ResolveInfo{
+				RootValue: map[string]interface{}{
+					"userID": float64(42),
+				},
+			},
+		}
+		rootInfo := NewRootInfo(ResolveParams(params))
+		got := GetRoot[int](rootInfo, "userID")
+		if got != 42 {
+			t.Errorf("GetRoot[int]() = %v, want %v", got, 42)
+		}
+	})
+}
+
 // Test Token Extraction
 
 func TestExtractBearerToken(t *testing.T) {

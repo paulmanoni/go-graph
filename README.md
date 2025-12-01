@@ -181,15 +181,15 @@ func getProtectedQuery() graph.QueryField {
             // Option 1: Get values from context (set by UserDetailsFn)
             userID := p.Context.Value("userID").(string)
 
-            // Option 2: Get token directly
-            token, err := graph.GetRootString(p, "token")
-            if err != nil {
+            // Option 2: Get token directly using generic GetRoot
+            token := graph.GetRoot[string](graph.NewRootInfo(p), "token")
+            if token == "" {
                 return nil, fmt.Errorf("authentication required")
             }
 
-            // Option 3: Get user details struct (if UserDetailsFn provided)
-            var user User
-            if err := graph.GetRootInfo(p, "details", &user); err != nil {
+            // Option 3: Get user details struct using generic GetRoot
+            user, err := graph.GetRootE[User](graph.NewRootInfo(p), "details")
+            if err != nil {
                 return nil, err
             }
 
@@ -884,13 +884,52 @@ ValidationRules: graph.DefaultValidationRules()
 
 ## Helper Functions
 
-### Accessing Root Values
+### Accessing Root Values (Generic API)
+
+Use the type-safe generic functions to access root values:
 
 ```go
-// Get token
+// Get string with zero value on error
+token := graph.GetRoot[string](graph.NewRootInfo(p), "token")
+
+// Get string with error handling
+token, err := graph.GetRootE[string](graph.NewRootInfo(p), "token")
+if err != nil {
+    return nil, fmt.Errorf("authentication required")
+}
+
+// Get string with default value
+token := graph.GetRootOr[string](graph.NewRootInfo(p), "token", "anonymous")
+
+// Get struct with type safety
+user := graph.GetRoot[User](graph.NewRootInfo(p), "details")
+
+// Get struct with error handling
+user, err := graph.GetRootE[User](graph.NewRootInfo(p), "details")
+if err != nil {
+    return nil, err
+}
+
+// MustGet - panics if not found (use when certain value exists)
+user := graph.MustGetRoot[User](graph.NewRootInfo(p), "details")
+```
+
+| Function | Missing Key | Conversion Error | Use Case |
+|----------|-------------|------------------|----------|
+| `GetRoot[T]` | Zero value | Zero value | Optional values, quick access |
+| `GetRootOr[T]` | Default | Default | Values with defaults |
+| `GetRootE[T]` | Error | Error | Required values with validation |
+| `MustGetRoot[T]` | Panic | Panic | Required values (certain to exist) |
+
+### Legacy API (Still Available)
+
+The original pointer-based functions are still available:
+
+```go
+// Get token (legacy)
 token, err := graph.GetRootString(p, "token")
 
-// Get user details
+// Get user details (legacy)
 var user User
 err := graph.GetRootInfo(p, "details", &user)
 ```
