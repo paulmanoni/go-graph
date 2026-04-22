@@ -85,6 +85,10 @@ type UnifiedResolver[T any] struct {
 	nullableInput          bool
 	inputName              string
 	resolverMiddlewares    []FieldMiddleware // Middleware stack applied to the main resolver
+	middlewareInfos        []MiddlewareInfo  // parallel to resolverMiddlewares; "anonymous" for WithMiddleware
+	argValidators          map[string][]Validator
+	deprecated             bool
+	deprecationReason      string
 }
 
 // FieldMiddleware wraps a field resolver with additional functionality (auth, logging, caching, etc.)
@@ -767,7 +771,124 @@ func extractResolverResults(results []reflect.Value) (interface{}, error) {
 //		BuildQuery()
 func (r *UnifiedResolver[T]) WithMiddleware(middleware FieldMiddleware) *UnifiedResolver[T] {
 	r.resolverMiddlewares = append(r.resolverMiddlewares, middleware)
+	r.middlewareInfos = append(r.middlewareInfos, MiddlewareInfo{Name: "anonymous"})
 	return r
+}
+
+// WithNamedMiddleware adds a middleware with a display name and description.
+// Prefer this over WithMiddleware when the middleware's identity matters to
+// tools that render the resolver — dashboards, documentation generators, or
+// a lint step that enforces "every mutation must have an 'auth' middleware".
+//
+// The name shows up verbatim in FieldInfo.Middlewares[i].Name, so keep it
+// kebab-case and stable ("auth", "rate-limit", "permission:admin").
+//
+//	r.WithNamedMiddleware("auth", "Bearer token validation", AuthMiddleware)
+//	r.WithNamedMiddleware("permission:admin", "Admin role required",
+//	    PermissionMiddleware([]string{"admin"}))
+func (r *UnifiedResolver[T]) WithNamedMiddleware(name, description string, middleware FieldMiddleware) *UnifiedResolver[T] {
+	r.resolverMiddlewares = append(r.resolverMiddlewares, middleware)
+	r.middlewareInfos = append(r.middlewareInfos, MiddlewareInfo{Name: name, Description: description})
+	return r
+}
+
+// WithArgValidator attaches one or more validators to a named argument.
+// Validators run after graphql-go parses input but before the resolver
+// fires; the first failing validator aborts with its error. Metadata
+// surfaces on FieldInfo.Args[i].Validators for dashboards.
+//
+// Use the built-in constructors (Required, StringLength, StringMatch,
+// OneOf, IntRange, Custom) rather than populating Validator by hand.
+//
+//	r.WithArgValidator("title", graph.Required(), graph.StringLength(1, 100))
+//	r.WithArgValidator("email", graph.StringMatch(`^\S+@\S+$`, "must be an email"))
+func (r *UnifiedResolver[T]) WithArgValidator(argName string, validators ...Validator) *UnifiedResolver[T] {
+	if r.argValidators == nil {
+		r.argValidators = map[string][]Validator{}
+	}
+	r.argValidators[argName] = append(r.argValidators[argName], validators...)
+	return r
+}
+
+// WithDeprecated marks this field deprecated. The reason propagates to the
+// generated *graphql.Field and to FieldInfo.DeprecationReason so both
+// GraphQL clients (via introspection) and tools see it.
+func (r *UnifiedResolver[T]) WithDeprecated(reason string) *UnifiedResolver[T] {
+	r.deprecated = true
+	r.deprecationReason = reason
+	return r
+}
+
+// --- Introspection ----------------------------------------------------------
+
+// FieldInfo returns a serializable snapshot of this resolver's metadata.
+// Calling this is cheap — it reads already-stored fields and runs Serve()
+// once for the return type. Safe to call multiple times.
+func (r *UnifiedResolver[T]) FieldInfo() FieldInfo {
+	kind := FieldKindQuery
+	if r.isMutation {
+		kind = FieldKindMutation
+	}
+
+	mws := make([]MiddlewareInfo, 0, len(r.resolverMiddlewares))
+	for i := range r.resolverMiddlewares {
+		if i < len(r.middlewareInfos) {
+			mws = append(mws, r.middlewareInfos[i])
+		} else {
+			mws = append(mws, MiddlewareInfo{Name: "anonymous"})
+		}
+	}
+
+	info := FieldInfo{
+		Name:              r.name,
+		Description:       r.description,
+		Kind:              kind,
+		List:              r.isList,
+		Paginated:         r.isPaginated,
+		Deprecated:        r.deprecated,
+		DeprecationReason: r.deprecationReason,
+		Args:              argsToInfo(r.args, r.argValidators),
+		Middlewares:       mws,
+		InputObject:       inputObjectInfo(r.inputType, r.nullableInput, r.useInputObject),
+	}
+
+	// Return type requires the concrete graphql.Field.
+	if field := r.Serve(); field != nil {
+		info.ReturnType = typeString(field.Type)
+	}
+
+	return info
+}
+
+// GetArgsDefinition returns the underlying graphql.FieldConfigArgument.
+// Useful for tools that want the raw graphql-go types (e.g. to fabricate
+// their own introspection query programmatically).
+func (r *UnifiedResolver[T]) GetArgsDefinition() graphql.FieldConfigArgument {
+	return r.args
+}
+
+// IsMutation reports whether BuildMutation or AsMutation was used.
+func (r *UnifiedResolver[T]) IsMutation() bool { return r.isMutation }
+
+// IsList reports whether AsList was used (or the return type is a slice).
+func (r *UnifiedResolver[T]) IsList() bool { return r.isList }
+
+// IsPaginated reports whether AsPaginated was used.
+func (r *UnifiedResolver[T]) IsPaginated() bool { return r.isPaginated }
+
+// IsDeprecated reports whether WithDeprecated was applied.
+func (r *UnifiedResolver[T]) IsDeprecated() bool { return r.deprecated }
+
+// GetMiddlewareCount returns the number of middlewares on the main resolver.
+// For richer information use FieldInfo().Middlewares.
+func (r *UnifiedResolver[T]) GetMiddlewareCount() int { return len(r.resolverMiddlewares) }
+
+// GetMiddlewareInfos returns the MiddlewareInfo slice in application order.
+// Entries for middlewares added via plain WithMiddleware have Name == "anonymous".
+func (r *UnifiedResolver[T]) GetMiddlewareInfos() []MiddlewareInfo {
+	out := make([]MiddlewareInfo, len(r.middlewareInfos))
+	copy(out, r.middlewareInfos)
+	return out
 }
 
 // ArgsGetter is an interface for types that can provide arguments by name.
@@ -1535,6 +1656,31 @@ func (r *UnifiedResolver[T]) Serve() *graphql.Field {
 	// Apply middleware stack to the resolver
 	resolver := r.resolver
 
+	// Apply arg validators as an outermost pre-resolve step. Failing any
+	// validator aborts with a user-facing error before the resolver runs.
+	if len(r.argValidators) > 0 {
+		inner := resolver
+		validators := r.argValidators
+		resolver = func(p graphql.ResolveParams) (interface{}, error) {
+			for argName, vs := range validators {
+				val, exists := p.Args[argName]
+				for _, v := range vs {
+					// Treat nil/missing as a "required" check opt-in.
+					if !exists || val == nil {
+						if v.Info.Kind == "required" {
+							return nil, fmt.Errorf("%s: %s", argName, v.Info.Message)
+						}
+						continue
+					}
+					if err := v.Fn(val); err != nil {
+						return nil, fmt.Errorf("%s: %w", argName, err)
+					}
+				}
+			}
+			return inner(p)
+		}
+	}
+
 	// Convert and apply middlewares if any exist
 	if len(r.resolverMiddlewares) > 0 {
 		// Wrap graphql.FieldResolveFn to our FieldResolveFn
@@ -1547,12 +1693,16 @@ func (r *UnifiedResolver[T]) Serve() *graphql.Field {
 		resolver = unwrapGraphQLResolver(wrappedResolver)
 	}
 
-	return &graphql.Field{
+	field := &graphql.Field{
 		Type:        outputType,
 		Description: r.description,
 		Args:        r.args,
 		Resolve:     resolver,
 	}
+	if r.deprecated {
+		field.DeprecationReason = r.deprecationReason
+	}
+	return field
 }
 
 // getScalarType returns the GraphQL scalar type for primitive Go types
