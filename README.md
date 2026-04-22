@@ -6,7 +6,8 @@ A modern, secure GraphQL handler for Go with built-in authentication, validation
 
 - 🚀 **Zero Config Start** - Default hello world schema included
 - 🔧 **Type-Safe Resolvers** - Compile-time type safety with generic resolvers
-- 🎯 **Type-Safe Arguments** - Automatic argument parsing with `NewArgsResolver`
+- 🎯 **Type-Safe Arguments** - Chainable `WithArg` API with automatic parsing into scalars or structs
+- ✍️ **Typed Mutations** - `NewMutation[T, In]` with kind-based builders (Create/Update/Delete/Action/Upsert), `Patch[In]` for partial updates, and lifecycle hooks
 - 🏗️ **Fluent Builder API** - Clean, intuitive schema construction
 - 🔐 **Built-in Auth** - Automatic Bearer token extraction
 - 🛡️ **Security First** - Query depth, complexity, and introspection protection
@@ -14,7 +15,7 @@ A modern, secure GraphQL handler for Go with built-in authentication, validation
 - 🎭 **Middleware System** - Built-in logging, auth, caching + custom middleware support
 - 🔄 **Real-time Subscriptions** - WebSocket subscriptions with dual protocol support
 - ⚡ **Framework Agnostic** - Works with net/http, Gin, or any framework
-- ⚡ **High Performance** - ~60μs per request, 100k+ RPS capable
+- ⚡ **High Performance** - ~30–35 μs per request, optional `QueryASTCache` drops validation cost to ~141 ns on hits
 
 Built on top of [graphql-go](https://github.com/graphql-go/graphql).
 
@@ -816,6 +817,11 @@ Configure validation behavior:
 
     // Skip validation in DEBUG mode
     SkipInDebug: true,
+
+    // Optional: cache parsed ASTs across requests so repeat queries skip the parser.
+    // Sized to an upper bound on the number of distinct queries you expect.
+    // When full, the cache is reset wholesale to keep memory bounded.
+    QueryCache: graph.NewQueryASTCache(256),
 }
 ```
 
@@ -825,24 +831,25 @@ Validation adds minimal overhead (measured on Apple M1 Pro):
 
 | Rule | Time/op | Allocations | Description |
 |------|---------|-------------|-------------|
-| MaxDepthRule | ~4.4 μs | 43 allocs | Query depth validation |
-| MaxComplexityRule | ~2.8 μs | 43 allocs | Complexity calculation |
-| MaxAliasesRule | ~3.0 μs | 51 allocs | Alias counting |
-| NoIntrospectionRule | ~10.5 μs | 36 allocs | Introspection blocking |
-| RequireAuthRule | ~1.3 μs | 30 allocs | Authentication check |
-| RoleRule | ~947 ns | 20 allocs | Role validation |
-| PermissionRule | ~858 ns | 20 allocs | Permission check |
-| RateLimitRule | ~3.7 μs | 36 allocs | Budget + complexity |
-| SecurityRules (preset) | ~3.2 μs | 43 allocs | Depth + complexity + aliases + introspection |
-| StrictSecurityRules | ~2.6 μs | 36 allocs | Stricter limits |
-| Combined rules | ~1.4 μs | 29 allocs | Multiple custom rules |
+| MaxDepthRule | ~1.4 μs | 43 allocs | Query depth validation |
+| MaxComplexityRule | ~1.4 μs | 43 allocs | Complexity calculation |
+| MaxAliasesRule | ~1.6 μs | 51 allocs | Alias counting |
+| NoIntrospectionRule | ~1.1 μs | 36 allocs | Introspection blocking |
+| RequireAuthRule | ~1.0 μs | 30 allocs | Authentication check |
+| RoleRule | ~626 ns | 20 allocs | Role validation |
+| PermissionRule | ~603 ns | 20 allocs | Permission check |
+| RateLimitRule | ~1.2 μs | 36 allocs | Budget + complexity |
+| SecurityRules (preset) | ~1.4 μs | 43 allocs | Depth + complexity + aliases + introspection |
+| SecurityRules (**cached**) | **~141 ns** | **1 alloc** | Same preset via `QueryASTCache` |
+| StrictSecurityRules | ~1.2 μs | 36 allocs | Stricter limits |
+| Combined rules | ~965 ns | 29 allocs | Multiple custom rules |
 
 **For a complete HTTP request:**
-- Debug mode (no validation): ~29 μs
-- With validation: ~31 μs
-- With sanitization: ~36 μs
-- Complete stack (validation + sanitization + auth): ~60 μs
-- **Overhead: ~2-3 μs for validation (negligible)**
+- Debug mode (no validation): ~31 μs
+- With validation: ~35 μs
+- With sanitization: ~35 μs (41 allocs in the sanitize path itself)
+- With auth: ~30 μs
+- **Overhead: ~1–2 μs for validation on a cache miss, ~100 ns on a cache hit**
 
 ### Migration from EnableValidation
 
@@ -1088,51 +1095,6 @@ func createPost() graph.MutationField {
             return postService.Create(input.Title, input.AuthorID)
         }).BuildMutation()
 }
-```
-
-## Type-Safe Arguments with NewArgsResolver (Deprecated)
-
-> **Deprecated:** `NewArgsResolver` is deprecated in favor of the new `WithArg` API. See the [Chainable Arguments with WithArg](#chainable-arguments-with-witharg) section below for the recommended approach.
-
-### Migration Guide
-
-**Before (deprecated):**
-```go
-type GetUserArgs struct {
-    ID int `json:"id" graphql:"id,required"`
-}
-
-graph.NewArgsResolver[User, GetUserArgs]("user").
-    WithResolver(func(ctx context.Context, p graph.ResolveParams, args GetUserArgs) (*User, error) {
-        return userService.GetByID(args.ID)
-    }).BuildQuery()
-```
-
-**After (recommended):**
-```go
-graph.NewResolver[User]("user").
-    WithArgRequired("id", graph.Int).
-    WithResolver(func(p graph.ResolveParams) (*User, error) {
-        id := graph.Get[int](graph.ArgsMap(p.Args), "id")
-        return userService.GetByID(id)
-    }).BuildQuery()
-```
-
-**For struct inputs:**
-```go
-// Before (deprecated):
-graph.NewArgsResolver[User, CreateUserInput]("createUser").
-    WithResolver(func(ctx context.Context, p graph.ResolveParams, input CreateUserInput) (*User, error) {
-        return userService.Create(input.Name, input.Email)
-    }).BuildMutation()
-
-// After (recommended):
-graph.NewResolver[User]("createUser").
-    WithArg("input", CreateUserInput{}).
-    WithResolver(func(p graph.ResolveParams) (*User, error) {
-        input := graph.Get[CreateUserInput](graph.ArgsMap(p.Args), "input")
-        return userService.Create(input.Name, input.Email)
-    }).BuildMutation()
 ```
 
 ## Chainable Arguments with WithArg
@@ -1388,24 +1350,265 @@ func createUser() graph.MutationField {
 }
 ```
 
-### Comparison: WithArg vs NewArgsResolver
+## Typed Mutations with NewMutation
 
-| Feature | WithArg | NewArgsResolver |
-|---------|---------|-----------------|
-| Argument definition | Chainable method | Struct with tags |
-| Type safety | Runtime (`Get[T]`) | Compile-time |
-| Flexibility | Mix scalars and structs | Single struct |
-| Best for | Flexible APIs | Structured inputs |
+`NewMutation[T, In]` is the recommended way to build mutations. It forces you to pick a
+**kind** (`Create`, `Update`, `Delete`, `Action`, `Upsert`) before wiring a resolver — each kind
+gives you the right resolver signature and the right schema shape. Input decoding, lifecycle
+hooks, and the presence-aware `Patch[In]` for partial updates are built in. Decode plans and
+patch field tables are cached per input type, so repeat calls avoid re-walking reflection.
 
-**Use `WithArg` when:**
-- You have a mix of scalar and struct arguments
-- Arguments are optional with defaults
-- You want chainable, fluent API
+### Why kind-based builders?
 
-**Use `NewArgsResolver` when:**
-- All arguments fit in a single struct
-- You want compile-time type safety
-- Arguments have validation tags
+The kind enforces intent at compile time:
+
+| Kind | Resolver signature | Use case |
+|------|--------------------|----------|
+| `Create` | `func(ctx, In) (*T, error)` | Insert a new record |
+| `Update` | `func(ctx, Patch[In]) (*T, error)` | Partial update — `Patch` tells you which fields the client sent |
+| `Delete` | `func(ctx, In) (*T, error)` | Remove a record (returns the deleted entity, or a tombstone) |
+| `Action` | `func(ctx, In) (*T, error)` | Side-effectful operation that isn't CRUD (sendEmail, rotateKey, etc.) |
+| `Upsert` | `func(ctx, Patch[In]) (Result[T], error)` | Insert-or-update — `Result.Created` surfaces which path ran |
+
+The `MutationBuilder` itself has no `WithResolver` or `Build`; you must transition to a kind
+builder first. This prevents accidentally using a `Create` resolver signature for an `Update`
+that needs presence information.
+
+### Quick Start
+
+```go
+type CreateUserInput struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+    Age   int    `json:"age"`
+}
+
+createUser := graph.NewMutation[User, CreateUserInput]("createUser").
+    WithDescription("Create a new user").
+    Create().
+    WithResolver(func(ctx context.Context, in CreateUserInput) (*User, error) {
+        return userService.Create(ctx, in)
+    }).
+    Build()
+
+graph.NewHTTP(&graph.GraphContext{
+    SchemaParams: &graph.SchemaBuilderParams{
+        MutationFields: []graph.MutationField{createUser},
+    },
+})
+```
+
+The input type (`CreateUserInput`) is automatically registered as a GraphQL `InputObject`
+named `CreateUserInputInput` (the "Input" suffix is appended when missing). The output type
+(`User`) is registered as a GraphQL `Object`. Both are cached globally so the same type
+produces the same GraphQL type across mutations.
+
+### Partial Updates with `Patch[In]`
+
+`Update` and `Upsert` resolvers receive `Patch[In]`, which distinguishes *omitted* from *set
+to zero value*. This is crucial for PATCH-style updates where `null` or missing fields should
+not overwrite existing data.
+
+```go
+type UpdateUserInput struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+    Bio   string `json:"bio"`
+}
+
+updateUser := graph.NewMutation[User, UpdateUserInput]("updateUser").
+    Update().
+    WithResolver(func(ctx context.Context, p graph.Patch[UpdateUserInput]) (*User, error) {
+        existing, err := userService.Get(ctx, userIDFromCtx(ctx))
+        if err != nil {
+            return nil, err
+        }
+
+        // Only fields actually sent by the client are applied onto `existing`.
+        p.Apply(existing)
+
+        // Or inspect manually:
+        if p.Has("email") {
+            // Email was sent — check uniqueness, etc.
+        }
+
+        return userService.Save(ctx, existing)
+    }).
+    Build()
+```
+
+`Patch[In]` exposes:
+
+| Method | Purpose |
+|--------|---------|
+| `Get() In` | The decoded input struct |
+| `Has(field string) bool` | Was this field sent by the client? |
+| `Fields() []string` | All field names the client sent |
+| `Presence() PresenceSet` | Read-only set view |
+| `Apply(dst *T)` | Copy only the present fields onto `dst` (reflection-cached) |
+
+### Upserts return `Result[T]`
+
+`Upsert` surfaces the insert-vs-update outcome to the client via an auto-generated
+`<MutationName>Payload` object with `result` and `created` fields:
+
+```go
+upsertUser := graph.NewMutation[User, UserInput]("upsertUser").
+    Upsert().
+    WithResolver(func(ctx context.Context, p graph.Patch[UserInput]) (graph.Result[User], error) {
+        u, created, err := userService.Upsert(ctx, p.Get())
+        if err != nil {
+            return graph.Result[User]{}, err
+        }
+        return graph.Result[User]{Value: u, Created: created}, nil
+    }).
+    Build()
+```
+
+GraphQL query:
+
+```graphql
+mutation {
+  upsertUser(input: { name: "Ada", email: "ada@example.com" }) {
+    created
+    result { id name email }
+  }
+}
+```
+
+### Lifecycle Hooks
+
+Implement any of these interfaces on your input type to hook into the mutation pipeline.
+They run **in this order**, all before the resolver:
+
+| Interface | Method | Order | Failure Code |
+|-----------|--------|-------|--------------|
+| `InputNormalizer` | `Normalize()` | 1 | — |
+| `InputAuthorizer` | `Authorize(ctx) error` | 2 | `UNAUTHORIZED` |
+| `PatchInputValidator` *(Update/Upsert only)* | `ValidatePatch(ctx, present) error` | 3 | `INVALID_INPUT` |
+| `InputValidator` *(Create/Delete/Action, or Update/Upsert fallback)* | `Validate(ctx) error` | 3 | `INVALID_INPUT` |
+
+```go
+type CreateUserInput struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+// Trim whitespace and lowercase the email before anything else sees it.
+func (in *CreateUserInput) Normalize() {
+    in.Name = strings.TrimSpace(in.Name)
+    in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+}
+
+// Gate the mutation to logged-in users.
+func (in *CreateUserInput) Authorize(ctx context.Context) error {
+    if _, ok := ctx.Value("userID").(string); !ok {
+        return errors.New("login required")
+    }
+    return nil
+}
+
+// Enforce field-level rules after normalization.
+func (in *CreateUserInput) Validate(ctx context.Context) error {
+    if !strings.Contains(in.Email, "@") {
+        return &graph.MutationError{
+            Code: graph.CodeInvalidInput, Field: "email", Message: "invalid email",
+        }
+    }
+    return nil
+}
+```
+
+For `Update`, prefer `ValidatePatch(ctx, present PresenceSet) error` so you can skip rules for
+fields the client didn't send:
+
+```go
+func (in *UpdateUserInput) ValidatePatch(ctx context.Context, present graph.PresenceSet) error {
+    if present.Has("email") && !strings.Contains(in.Email, "@") {
+        return &graph.MutationError{Code: graph.CodeInvalidInput, Field: "email"}
+    }
+    return nil
+}
+```
+
+### Error Model
+
+Return `*MutationError` (or any error — non-`MutationError` errors are wrapped as
+`INVALID_INPUT` or `UNAUTHORIZED` depending on which hook failed, or `INTERNAL` if the
+resolver itself is unset). Codes map cleanly to GraphQL error extensions:
+
+```go
+const (
+    CodeInvalidInput ErrorCode = "INVALID_INPUT"
+    CodeUnauthorized ErrorCode = "UNAUTHORIZED"
+    CodeNotFound     ErrorCode = "NOT_FOUND"
+    CodeConflict     ErrorCode = "CONFLICT"
+    CodeInternal     ErrorCode = "INTERNAL"
+)
+```
+
+`MutationError` implements `Extensions() map[string]any`, which graphql-go surfaces as the
+error's `extensions` block — clients get a structured `{ "code": "CONFLICT", "field": "email" }`
+instead of a string they have to regex.
+
+```go
+return nil, &graph.MutationError{
+    Code:    graph.CodeConflict,
+    Field:   "email",
+    Message: "email already registered",
+}
+```
+
+### Middleware, Input Name, Description
+
+All kinds share these configuration calls on the base builder:
+
+```go
+graph.NewMutation[User, CreateUserInput]("createUser").
+    WithDescription("Register a new user account").
+    WithInputName("payload"). // default is "input"
+    Use(authMiddleware, auditMiddleware).
+    Create().
+    WithResolver(createHandler).
+    Build()
+```
+
+Middleware wraps the resolver using the same `FieldMiddleware` type as resolver middleware —
+see [Middleware](#middleware) below.
+
+### Performance
+
+| Operation | Time/op | Allocations |
+|-----------|---------|-------------|
+| Build (Create) | ~381 ns | 10 allocs |
+| Build (Update) | ~380 ns | 10 allocs |
+| Build (Action) | ~356 ns | 10 allocs |
+| Execute (Create) | ~302 ns | 5 allocs |
+| Execute (Update) | ~443 ns | 7 allocs |
+| Execute (Delete) | ~227 ns | 5 allocs |
+| Execute (Action) | ~232 ns | 5 allocs |
+| Decode Input | ~245 ns | 3 allocs |
+| Patch.Apply | ~93 ns | 1 alloc |
+
+Decode plans (tag parsing + setter selection per field) and patch field tables (name + struct
+index) are cached in `sync.Map`s keyed by `reflect.Type`. Reflection happens once per input
+type, ever — the hot path uses the cached plan directly.
+
+### Comparison with the older `NewResolver[T]().BuildMutation()` API
+
+The older pattern still works, but has rough edges the new API fixes:
+
+| Concern | `NewResolver[T].BuildMutation()` | `NewMutation[T, In]` |
+|---------|----------------------------------|----------------------|
+| Resolver signature | Same for create/update/delete/action | Kind-specific — compiler enforces the right shape |
+| Partial updates | Manual — you decide per field whether empty means "omitted" or "clear" | First-class `Patch[In]` with `Has(field)` |
+| Upsert payload | DIY — return a map or custom struct | Built-in `Result[T]` + auto-generated `<Name>Payload` |
+| Lifecycle hooks | Scattered across middleware | Interface-based: `Normalize`, `Authorize`, `Validate(Patch)` |
+| Error codes | String messages | Typed `MutationError` with `Extensions()` |
+| Input parsing | `GetArg(p, "input", &in)` (re-parse per call) | Cached decode plan per type |
+
+The old `BuildMutation()` is still supported for backwards compatibility; new code should
+prefer `NewMutation[T, In]`.
 
 ## Middleware
 
@@ -2453,7 +2656,7 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 
 | Operation | Time/op | Allocations | Description |
 |-----------|---------|-------------|-------------|
-| Token Extraction | ~31 ns | 0 allocs | Bearer token from header |
+| Token Extraction | ~36 ns | 0 allocs | Bearer token from header |
 | Type Registration | ~14 ns | 0 allocs | Object type caching |
 | Get[string] | ~10 ns | 0 allocs | Extract string argument |
 | Get[int] | ~10 ns | 0 allocs | Extract int argument |
@@ -2464,32 +2667,38 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 
 | Operation | Time/op | Allocations | Description |
 |-----------|---------|-------------|-------------|
-| Simple Schema | ~9 μs | 122 allocs | Default hello/echo schema |
-| Complex Schema | ~10 μs | 147 allocs | Multiple types with nesting |
-| Schema from Context | ~8-10 μs | 109-136 allocs | Build from GraphContext |
+| Simple Schema | ~10 μs | 124 allocs | Default hello/echo schema |
+| Complex Schema | ~12 μs | 148 allocs | Multiple types with nesting |
+| With Subscriptions | ~16 μs | 136 allocs | Schema + subscription field |
+| Multiple Subscriptions | ~16 μs | 125 allocs | Schema + multiple subscription fields |
 
 #### Query Validation
 
 | Operation | Time/op | Allocations | Description |
 |-----------|---------|-------------|-------------|
-| Simple Query | ~700 ns | 27 allocs | Basic field selection |
-| Complex Query | ~3.2 μs | 103 allocs | Nested 3 levels deep |
-| Deep Query | ~2.2 μs | 72 allocs | Nested 5+ levels |
-| With Aliases | ~3.9 μs | 130 allocs | Multiple field aliases |
-| Depth Calculation | ~6-16 ns | 0 allocs | AST traversal |
+| Simple Query | ~816 ns | 27 allocs | Basic field selection |
+| Complex Query | ~3.7 μs | 103 allocs | Nested 3 levels deep |
+| Deep Query | ~2.5 μs | 72 allocs | Nested 5+ levels |
+| With Aliases | ~4.6 μs | 130 allocs | Multiple field aliases |
+| SecurityRules (uncached) | ~1.4–5.6 μs | 43 allocs | Default security ruleset |
+| SecurityRules (**cached**) | **~141 ns** | **1 alloc** | Same ruleset via `QueryASTCache` |
+| Depth Calculation | ~6–16 ns | 0 allocs | AST traversal |
 | Alias Counting | ~20 ns | 0 allocs | AST analysis |
 | Complexity Calc | ~13 ns | 0 allocs | Complexity scoring |
+
+> `QueryASTCache` skips the parser on repeat queries — see [Query AST Caching](#query-ast-caching) below.
 
 #### HTTP Handler Performance
 
 | Operation | Time/op | Allocations | Description |
 |-----------|---------|-------------|-------------|
-| Debug Mode | ~28 μs | 439 allocs | No validation/sanitization |
-| With Validation | ~28 μs | 478 allocs | Query validation enabled |
-| With Sanitization | ~34 μs | 607 allocs | Error sanitization enabled |
-| With Auth | ~27 μs | 443 allocs | Token + user details fetch |
-| Complete Stack | ~60 μs | 966 allocs | All features enabled |
+| Debug Mode | ~31 μs | 439 allocs | No validation/sanitization |
+| With Validation | ~35 μs | 466 allocs | Query validation enabled |
+| With Sanitization | ~35 μs | 560 allocs | Error sanitization enabled |
+| With Auth | ~30 μs | 445 allocs | Token + user details fetch |
 | GET Request | ~29 μs | 436 allocs | Query string parsing |
+| Parallel (b.RunParallel) | ~19 μs | 440 allocs | Concurrent request handling |
+| Custom Root Object | ~29 μs | 441 allocs | `RootObjectFn` wired |
 
 #### Resolver Creation
 
@@ -2501,21 +2710,27 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 | Paginated | ~230 ns | 5 allocs | Pagination wrapper |
 | With Input Object | ~411 ns | 10 allocs | Input type generation |
 
-#### Type-Safe Arguments (NewArgsResolver)
+#### Argument Handling
 
 | Operation | Time/op | Allocations | Description |
 |-----------|---------|-------------|-------------|
-| Struct Args Creation | ~874 ns | 17 allocs | Create resolver with struct args |
-| Primitive Args Creation | ~372 ns | 11 allocs | Create resolver with primitive args |
-| Nested Struct Args Creation | ~581 ns | 15 allocs | Create resolver with nested structs |
-| List Resolver Creation | ~544 ns | 14 allocs | Create list resolver with args |
-| Execute Struct Args | ~259 ns | 5 allocs | Execute resolver with struct args |
-| Execute Primitive Args | ~66 ns | 2 allocs | Execute resolver with primitive args |
-| Execute Nested Structs | ~397 ns | 6 allocs | Execute resolver with nested structs |
-| Execute With Context | ~158 ns | 4 allocs | Execute with context.Context |
 | Generate Args From Type | ~1.3 μs | 22 allocs | Auto-generate GraphQL args from struct |
 | Map Args to Struct | ~457 ns | 7 allocs | Parse and map GraphQL args to Go struct |
 | Map Nested Struct | ~346 ns | 4 allocs | Parse nested struct arguments |
+
+#### Typed Mutations (`NewMutation[T, In]`)
+
+| Operation | Time/op | Allocations | Description |
+|-----------|---------|-------------|-------------|
+| Build (Create) | ~381 ns | 10 allocs | Field construction |
+| Build (Update) | ~380 ns | 10 allocs | Field construction |
+| Build (Action) | ~356 ns | 10 allocs | Field construction |
+| Execute (Create) | ~302 ns | 5 allocs | Resolver dispatch |
+| Execute (Update) | ~443 ns | 7 allocs | Resolver dispatch + `Patch` build |
+| Execute (Delete) | ~227 ns | 5 allocs | Resolver dispatch |
+| Execute (Action) | ~232 ns | 5 allocs | Resolver dispatch |
+| Decode Input | ~245 ns | 3 allocs | Cached plan, per-input decode |
+| Patch.Apply | ~93 ns | 1 alloc | Copy present fields to dst |
 
 #### Advanced Features
 
@@ -2523,7 +2738,7 @@ Performance metrics on Apple M1 Pro (results will vary by hardware):
 |-----------|---------|-------------|-------------|
 | GetRootInfo | ~742 ns | 12 allocs | Complex type extraction |
 | GetArg (Complex) | ~1.1 μs | 15 allocs | Struct argument parsing |
-| Response Sanitization | ~5.4 μs | 80 allocs | Regex error cleaning |
+| Response Sanitization | ~3.2 μs | 41 allocs | Regex error cleaning (pooled regex + error-marker fast path) |
 | Cached Field Resolver | ~5.6 ns | 0 allocs | Cache hit scenario |
 | Response Write | ~3.4 ns | 0 allocs | Buffer write operation |
 
@@ -2533,17 +2748,17 @@ Comprehensive benchmarks for real-time subscription operations:
 
 | Operation | Time/op | Allocations | Description |
 |-----------|---------|-------------|-------------|
-| Build Subscription | ~200-600 ns | 5-15 allocs | Create subscription resolver |
+| Build Subscription | ~200–600 ns | 5–15 allocs | Create subscription resolver |
 | Build Complex Subscription | ~800 ns | 17 allocs | With args, filter, middleware |
-| Execute Subscription | ~500-1000 ns | 10-20 allocs | Start event streaming |
-| With Filter | ~1-2 μs | 15-25 allocs | Filter 100 events |
-| With Middleware | ~500 ns | 10 allocs | 3 middleware layers |
+| Execute Subscription | ~589 ns | 8 allocs | Start event streaming |
+| With Filter | ~3.6 μs | 20 allocs | Filter 100 events |
+| With Middleware | ~1.4 μs | 13 allocs | 3 middleware layers |
 | UnmarshalSubscriptionMessage | ~300 ns | 5 allocs | JSON parsing |
-| Event Throughput | ~1-2 μs | 20 allocs | 1000 events/subscription |
-| With PubSub | ~1 μs | 15 allocs | PubSub integration |
+| Event Throughput | ~55 μs | 2024 allocs | 1000 events/subscription (dominated by event payload alloc) |
+| With PubSub | ~3.4 μs | 16 allocs | PubSub integration, context-scoped per iter |
 | Type Generation | ~800 ns | 15 allocs | Complex event type |
-| Concurrent Subscriptions | ~500 ns | 12 allocs | Parallel execution |
-| Schema with Subscriptions | ~10 μs | 150 allocs | Multiple subscriptions |
+| Concurrent Subscriptions | ~1.9 μs | 36 allocs | Parallel execution |
+| Schema with Subscriptions | ~16 μs | 136 allocs | Multiple subscriptions |
 
 **Key Observations:**
 - Subscription creation is fast (~200-800ns) with minimal allocations
@@ -2598,23 +2813,57 @@ Performance benchmarks for automatic embedded struct flattening:
 | Parallel Type Registration | ~145 ns | 0 allocs | Thread-safe type caching |
 | Parallel Embedded Generation | ~779 ns | 22 allocs | Concurrent embedded field gen |
 
+### Query AST Caching
+
+`ExecuteValidationRules` re-parses every incoming query by default. For steady-state traffic where
+the same queries recur (persisted queries, mobile apps with a fixed query set, internal clients),
+plug in a `QueryASTCache` to skip parsing on hits:
+
+```go
+graph.NewHTTP(&graph.GraphContext{
+    ValidationRules: graph.SecurityRules,
+    ValidationOptions: &graph.ValidationOptions{
+        QueryCache: graph.NewQueryASTCache(256), // upper bound on distinct queries
+    },
+    // ...
+})
+```
+
+Observed impact on `BenchmarkSecurityRules`:
+
+| | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| Uncached | 1.4–5.6 μs | 1672 | 43 |
+| Cached (hit) | **141 ns** | **64** | **1** |
+
+That's ~12× faster and ~43× fewer allocations on the cache-hit path. The cache uses an `RWMutex`-protected
+map; when `max` entries is reached the map is swapped for a fresh one (coarse eviction) so memory stays
+bounded without the overhead of a per-entry LRU. Cached ASTs are read-only — validation rules must not
+mutate them.
+
+> Note: graphql-go's handler still parses the query a second time during execution. The cache eliminates
+> the validation-side parse only. Fully eliminating the double-parse requires invoking `graphql.Do`
+> directly instead of using `handler.Handler`.
+
 ### Key Takeaways
 
 - **Zero-allocation primitives**: Token extraction and utility functions have zero heap allocations
-- **Fast validation**: Query validation adds minimal overhead (~700ns-4μs depending on complexity)
-- **Type-safe arguments**: NewArgsResolver execution is blazing fast (~66ns for primitives, ~259ns for structs)
+- **Fast validation**: Query validation adds minimal overhead (~800 ns–4 μs depending on complexity), or ~141 ns with `QueryASTCache` on a hit
+- **Type-safe arguments**: `WithArg` + `Get[T](ArgsMap(…))` keep per-call overhead in the low hundreds of ns
 - **Efficient type generation**: Auto-generating GraphQL args from structs adds minimal overhead (~1.3μs one-time cost)
-- **Efficient caching**: Type registration uses read-write locks for optimal concurrent access
+- **Pooled request/response paths**: POST body buffers and the response-sanitization wrapper are reused via `sync.Pool`, cutting per-request allocation
+- **Sanitize-on-error fast path**: Responses without an `"errors"` field skip JSON unmarshal/remarshal entirely
 - **Predictable performance**: End-to-end request handling is consistently under 100μs
-- **Production ready**: Complete stack with all security features runs at ~60μs per request
+- **Production ready**: Complete stack with all security features runs well under 100μs per request
 
 ### Optimization Tips
 
-1. **Enable caching**: Type registration is cached automatically - registered types are reused
-2. **Use DEBUG mode wisely**: Validation adds ~0-1μs overhead, only disable in development
-3. **Minimize complexity**: Keep query depth under 10 levels for optimal validation performance
-4. **Batch operations**: Use concurrent requests for multiple independent queries
-5. **Profile your resolvers**: The handler overhead is minimal (~30μs), optimize resolver logic first
+1. **Enable the AST cache**: Set `ValidationOptions.QueryCache` to a `NewQueryASTCache(n)` sized for your distinct-query count — biggest single win for steady-state traffic
+2. **Enable type caching**: Type registration is cached automatically — registered types are reused
+3. **Use DEBUG mode wisely**: Validation adds ~1 μs overhead on a cache miss (~0.1 μs on a hit), only disable in development
+4. **Minimize complexity**: Keep query depth under 10 levels for optimal validation performance
+5. **Batch operations**: Use concurrent requests for multiple independent queries
+6. **Profile your resolvers**: The handler overhead is minimal (~30 μs), optimize resolver logic first
 
 ## High Load Performance Analysis
 
