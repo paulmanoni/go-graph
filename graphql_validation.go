@@ -3,12 +3,60 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
 	"github.com/graphql-go/graphql/language/parser"
 	"github.com/graphql-go/graphql/language/source"
 )
+
+// QueryASTCache caches parsed GraphQL ASTs keyed by the raw query string.
+// It is safe for concurrent use. When the cache reaches its configured max
+// size, the entire map is replaced — a coarse eviction that keeps the
+// implementation lock-simple and predictable for steady-state traffic.
+//
+// Rules walk the AST read-only; callers MUST NOT mutate cached ASTs.
+type QueryASTCache struct {
+	mu      sync.RWMutex
+	entries map[string]*ast.Document
+	max     int
+}
+
+// NewQueryASTCache returns a cache bounded to maxEntries. A non-positive
+// maxEntries is clamped to 1 to preserve cache semantics without growing
+// unbounded.
+func NewQueryASTCache(maxEntries int) *QueryASTCache {
+	if maxEntries < 1 {
+		maxEntries = 1
+	}
+	return &QueryASTCache{
+		entries: make(map[string]*ast.Document, maxEntries),
+		max:     maxEntries,
+	}
+}
+
+func (c *QueryASTCache) get(query string) *ast.Document {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	doc := c.entries[query]
+	c.mu.RUnlock()
+	return doc
+}
+
+func (c *QueryASTCache) put(query string, doc *ast.Document) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if len(c.entries) >= c.max {
+		c.entries = make(map[string]*ast.Document, c.max)
+	}
+	c.entries[query] = doc
+	c.mu.Unlock()
+}
 
 // calculateQueryDepth recursively calculates the maximum depth of a query
 func calculateQueryDepth(node ast.Node, currentDepth int) int {
@@ -352,18 +400,22 @@ func ExecuteValidationRules(
 		}
 	}
 
-	// Parse the query string into an AST
-	src := source.NewSource(&source.Source{
-		Body: []byte(queryString),
-		Name: "GraphQL request",
-	})
+	// Parse the query string into an AST, consulting the cache first if one
+	// was configured. Cached ASTs are shared read-only across requests.
+	doc := options.QueryCache.get(queryString)
+	if doc == nil {
+		src := source.NewSource(&source.Source{
+			Body: []byte(queryString),
+			Name: "GraphQL request",
+		})
 
-	doc, err := parser.Parse(parser.ParseParams{
-		Source: src,
-	})
-	if err != nil {
-		// If parsing fails, let the GraphQL handler deal with it
-		return nil
+		parsed, err := parser.Parse(parser.ParseParams{Source: src})
+		if err != nil {
+			// If parsing fails, let the GraphQL handler deal with it.
+			return nil
+		}
+		doc = parsed
+		options.QueryCache.put(queryString, doc)
 	}
 
 	// Create validation context

@@ -118,6 +118,20 @@ func BenchmarkSecurityRules(b *testing.B) {
 	}
 }
 
+// BenchmarkSecurityRules_Cached mirrors BenchmarkSecurityRules but passes a
+// QueryASTCache so repeat calls skip parsing. Direct apples-to-apples
+// comparison with BenchmarkSecurityRules.
+func BenchmarkSecurityRules_Cached(b *testing.B) {
+	schema := createTestSchema()
+	query := `{ user { id name email } }`
+	opts := &ValidationOptions{QueryCache: NewQueryASTCache(64)}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ExecuteValidationRules(query, schema, SecurityRules, nil, opts)
+	}
+}
+
 func BenchmarkStrictSecurityRules(b *testing.B) {
 	schema := createTestSchema()
 	query := `{ user { id name } }`

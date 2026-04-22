@@ -125,6 +125,10 @@ type ValidationOptions struct {
 
 	// SkipInDebug skips validation when DEBUG=true
 	SkipInDebug bool
+
+	// QueryCache, when non-nil, caches parsed ASTs keyed by query string so
+	// repeated requests with the same query skip the parser.
+	QueryCache *QueryASTCache
 }
 
 // ASTVisitor allows traversing the AST with hooks
