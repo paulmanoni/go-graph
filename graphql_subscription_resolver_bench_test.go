@@ -89,9 +89,13 @@ func BenchmarkSubscription_Execute(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = field.Subscribe(graphql.ResolveParams{
+		result, _ := field.Subscribe(graphql.ResolveParams{
 			Context: context.Background(),
 		})
+		if ch, ok := result.(<-chan interface{}); ok {
+			for range ch {
+			}
+		}
 	}
 }
 
@@ -173,9 +177,13 @@ func BenchmarkSubscription_WithMiddleware(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = field.Subscribe(graphql.ResolveParams{
+		result, _ := field.Subscribe(graphql.ResolveParams{
 			Context: context.Background(),
 		})
+		if ch, ok := result.(<-chan interface{}); ok {
+			for range ch {
+			}
+		}
 	}
 }
 
@@ -242,10 +250,16 @@ func BenchmarkSubscription_WithPubSub(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = field.Subscribe(graphql.ResolveParams{
+		ctx, cancel := context.WithCancel(context.Background())
+		result, _ := field.Subscribe(graphql.ResolveParams{
 			Args:    map[string]interface{}{"channelID": "test"},
-			Context: context.Background(),
+			Context: ctx,
 		})
+		cancel()
+		if ch, ok := result.(<-chan interface{}); ok {
+			for range ch {
+			}
+		}
 	}
 }
 

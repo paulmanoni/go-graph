@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/handler"
@@ -57,34 +58,20 @@ func getDefaultHelloQuery() QueryField {
 		}).BuildQuery()
 }
 
-// getDefaultEchoMutation creates a default echo mutation
+// EchoInput is the input for the default echo mutation.
+type EchoInput struct {
+	Message string `json:"message" graphql:"message,required" description:"Message to echo back"`
+}
+
+// getDefaultEchoMutation creates a default echo mutation.
 func getDefaultEchoMutation() MutationField {
-	return NewArgsResolver[string, string]("echo", "message").
-		WithResolver(func(ctx context.Context, p ResolveParams, args string) (*string, error) {
-			return &args, nil
+	return NewMutation[string, EchoInput]("echo").
+		Action().
+		WithResolver(func(ctx context.Context, in EchoInput) (*string, error) {
+			return &in.Message, nil
 		}).
-		BuildMutation()
+		Build()
 }
-
-// Example: Type-safe args version of echo mutation (alternative implementation)
-// This shows the new NewTypedResolver[T, A]() API for type-safe argument handling
-// Uncomment to use:
-/*
-func getDefaultEchoMutationTypeSafe() MutationField {
-	type EchoArgs struct {
-		Message string `json:"message" graphql:"message,required" description:"Message to echo back"`
-	}
-
-	return NewTypedResolver[string, EchoArgs]("echo").
-		WithResolver(func(ctx context.Context, args EchoArgs) (*string, error) {
-			// No need for GetArgString - args.Message is already type-safe!
-			if args.Message == "" {
-				return nil, errors.New("no message provided")
-			}
-			return &args.Message, nil
-		}).BuildMutation()
-}
-*/
 
 // userDetailsResult holds the result of calling UserDetailsFn
 type userDetailsResult struct {
@@ -160,6 +147,57 @@ func buildSchemaFromContext(graphCtx *GraphContext) (*graphql.Schema, error) {
 	return &schema, nil
 }
 
+var (
+	didYouMeanRE = regexp.MustCompile(`Did you mean "[^"]+"\?`)
+	whitespaceRE = regexp.MustCompile(`\s+`)
+	errorsMarker = []byte(`"errors"`)
+)
+
+// bodyBufPool reuses *bytes.Buffer across requests for reading POST bodies.
+// Buffers returned to the pool keep their underlying storage, so subsequent
+// requests avoid growing a fresh buffer from zero.
+var bodyBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// responseWrapperPool reuses *responseWriterWrapper (and its embedded
+// *bytes.Buffer) across requests when sanitization is enabled.
+var responseWrapperPool = sync.Pool{
+	New: func() any {
+		return &responseWriterWrapper{body: new(bytes.Buffer)}
+	},
+}
+
+func acquireResponseWriterWrapper(w http.ResponseWriter) *responseWriterWrapper {
+	rw := responseWrapperPool.Get().(*responseWriterWrapper)
+	rw.ResponseWriter = w
+	rw.body.Reset()
+	rw.statusCode = http.StatusOK
+	return rw
+}
+
+func releaseResponseWriterWrapper(rw *responseWriterWrapper) {
+	rw.ResponseWriter = nil
+	responseWrapperPool.Put(rw)
+}
+
+// gqlRequestBody is a minimal typed view of the GraphQL request envelope used
+// to extract the query string without allocating a generic map[string]any.
+type gqlRequestBody struct {
+	Query string `json:"query"`
+}
+
+// gqlError / gqlErrorResponse mirror the GraphQL error response shape using
+// typed structs to avoid nested map[string]any allocations on the error path.
+type gqlError struct {
+	Message string `json:"message"`
+	Rule    string `json:"rule,omitempty"`
+}
+
+type gqlErrorResponse struct {
+	Errors []gqlError `json:"errors"`
+}
+
 // responseWriterWrapper wraps http.ResponseWriter to capture and sanitize responses
 type responseWriterWrapper struct {
 	http.ResponseWriter
@@ -187,27 +225,24 @@ func (w *responseWriterWrapper) WriteHeader(statusCode int) {
 func (w *responseWriterWrapper) sanitizeAndWrite() {
 	body := w.body.Bytes()
 
-	// Try to parse as JSON
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err == nil {
-		// Sanitize error messages
-		if errors, ok := data["errors"].([]interface{}); ok {
-			for _, errItem := range errors {
-				if errMap, ok := errItem.(map[string]interface{}); ok {
-					if message, ok := errMap["message"].(string); ok {
-						// Remove field suggestions using regex
-						re := regexp.MustCompile(`Did you mean "[^"]+"\?`)
-						sanitized := re.ReplaceAllString(message, "")
-						// Clean up extra spaces
-						sanitized = regexp.MustCompile(`\s+`).ReplaceAllString(sanitized, " ")
-						sanitized = strings.TrimSpace(sanitized)
-						errMap["message"] = sanitized
+	// Skip parse/re-marshal entirely for responses without errors (the common case).
+	if bytes.Contains(body, errorsMarker) {
+		var data map[string]interface{}
+		if err := json.Unmarshal(body, &data); err == nil {
+			if errors, ok := data["errors"].([]interface{}); ok {
+				for _, errItem := range errors {
+					if errMap, ok := errItem.(map[string]interface{}); ok {
+						if message, ok := errMap["message"].(string); ok {
+							sanitized := didYouMeanRE.ReplaceAllString(message, "")
+							sanitized = whitespaceRE.ReplaceAllString(sanitized, " ")
+							sanitized = strings.TrimSpace(sanitized)
+							errMap["message"] = sanitized
+						}
 					}
 				}
-			}
-			// Re-encode to JSON
-			if sanitizedBody, err := json.Marshal(data); err == nil {
-				body = sanitizedBody
+				if sanitizedBody, err := json.Marshal(data); err == nil {
+					body = sanitizedBody
+				}
 			}
 		}
 	}
@@ -374,10 +409,10 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 	if graphCtx.EnableSubscriptions {
 		// Set up WebSocket handler
 		wsParams := WebSocketParams{
-			Schema:  schema,
-			PubSub:  graphCtx.PubSub,
-			AuthFn:  createWebSocketAuthFn(graphCtx),
-			CheckOrigin: graphCtx.WebSocketCheckOrigin,
+			Schema:       schema,
+			PubSub:       graphCtx.PubSub,
+			AuthFn:       createWebSocketAuthFn(graphCtx),
+			CheckOrigin:  graphCtx.WebSocketCheckOrigin,
 			RootObjectFn: graphCtx.RootObjectFn,
 		}
 		wsHandler = NewWebSocketHandler(wsParams)
@@ -412,31 +447,34 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 		// Extract query for validation
 		var query string
 		if r.Method == http.MethodPost {
-			// Read body
-			bodyBytes, err := io.ReadAll(r.Body)
-			if err != nil {
+			// Read body into a pooled buffer. The buffer must outlive h.ServeHTTP
+			// since r.Body wraps its bytes, so release via defer at closure scope.
+			buf := bodyBufPool.Get().(*bytes.Buffer)
+			buf.Reset()
+			defer bodyBufPool.Put(buf)
+
+			if _, err := buf.ReadFrom(r.Body); err != nil {
 				http.Error(w, "Failed to read request body", http.StatusBadRequest)
 				return
 			}
+			bodyBytes := buf.Bytes()
 
 			// Try to parse as form data
 			if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
-				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				if err := r.ParseForm(); err == nil {
 					query = r.PostForm.Get("query")
 				}
 			} else {
 				// Try to parse as JSON
-				var requestBody map[string]interface{}
+				var requestBody gqlRequestBody
 				if err := json.Unmarshal(bodyBytes, &requestBody); err == nil {
-					if q, ok := requestBody["query"].(string); ok {
-						query = q
-					}
+					query = requestBody.Query
 				}
 			}
 
 			// Restore body for GraphQL handler
-			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		} else if r.Method == http.MethodGet {
 			query = r.URL.Query().Get("query")
 		}
@@ -463,46 +501,27 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusBadRequest)
 
-					// Format error response based on error type
-					var errorResponse map[string]interface{}
-					if multiErr, ok := err.(*MultiValidationError); ok {
-						// Multiple validation errors
-						var errors []map[string]interface{}
-						for _, e := range multiErr.Errors {
-							if validationErr, ok := e.(*ValidationError); ok {
-								errors = append(errors, map[string]interface{}{
-									"message": validationErr.Error(),
-									"rule":    validationErr.Rule,
+					var resp gqlErrorResponse
+					switch e := err.(type) {
+					case *MultiValidationError:
+						resp.Errors = make([]gqlError, 0, len(e.Errors))
+						for _, inner := range e.Errors {
+							if validationErr, ok := inner.(*ValidationError); ok {
+								resp.Errors = append(resp.Errors, gqlError{
+									Message: validationErr.Error(),
+									Rule:    validationErr.Rule,
 								})
 							} else {
-								errors = append(errors, map[string]interface{}{
-									"message": e.Error(),
-								})
+								resp.Errors = append(resp.Errors, gqlError{Message: inner.Error()})
 							}
 						}
-						errorResponse = map[string]interface{}{
-							"errors": errors,
-						}
-					} else if validationErr, ok := err.(*ValidationError); ok {
-						// Single validation error
-						errorResponse = map[string]interface{}{
-							"errors": []map[string]interface{}{
-								{
-									"message": validationErr.Message,
-									"rule":    validationErr.Rule,
-								},
-							},
-						}
-					} else {
-						// Generic error
-						errorResponse = map[string]interface{}{
-							"errors": []map[string]interface{}{
-								{"message": err.Error()},
-							},
-						}
+					case *ValidationError:
+						resp.Errors = []gqlError{{Message: e.Message, Rule: e.Rule}}
+					default:
+						resp.Errors = []gqlError{{Message: err.Error()}}
 					}
 
-					_ = json.NewEncoder(w).Encode(errorResponse)
+					_ = json.NewEncoder(w).Encode(resp)
 					return
 				}
 			}
@@ -510,9 +529,10 @@ func NewHTTP(graphCtx *GraphContext) http.HandlerFunc {
 
 		// Wrap response writer for sanitization if enabled
 		if graphCtx.EnableSanitization {
-			wrapper := newResponseWriterWrapper(w)
+			wrapper := acquireResponseWriterWrapper(w)
 			h.ServeHTTP(wrapper, r)
 			wrapper.sanitizeAndWrite()
+			releaseResponseWriterWrapper(wrapper)
 		} else {
 			h.ServeHTTP(w, r)
 		}

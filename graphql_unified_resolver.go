@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -1285,110 +1284,6 @@ func resolveInputType(argType interface{}, argName string) graphql.Input {
 	return nil
 }
 
-// TypedArgsResolver provides type-safe argument handling
-//
-// Deprecated: Use NewResolver with WithArg instead. The WithArg API provides
-// a more flexible and chainable approach to defining arguments.
-//
-// Migration example:
-//
-//	// Before (deprecated):
-//	NewArgsResolver[User, GetUserArgs]("user").
-//		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
-//			return userService.GetByID(args.ID)
-//		}).BuildQuery()
-//
-//	// After (recommended):
-//	NewResolver[User]("user").
-//		WithArg("id", graph.Int).
-//		WithResolver(func(p ResolveParams, args Args) (*User, error) {
-//			id := Get[int](args, "id")
-//			return userService.GetByID(id)
-//		}).BuildQuery()
-type TypedArgsResolver[T any, A any] struct {
-	base     *UnifiedResolver[T]
-	argName  []string
-	argType  reflect.Type
-	isScalar bool
-}
-
-// NewArgsResolver creates a resolver with type-safe arguments.
-//
-// Deprecated: Use NewResolver with WithArg instead for a more flexible API.
-//
-// Migration guide:
-//
-//	// Before (deprecated):
-//	type GetUserArgs struct {
-//		ID int `graphql:"id,required"`
-//	}
-//	NewArgsResolver[User, GetUserArgs]("user").
-//		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
-//			return userService.GetByID(args.ID)
-//		}).BuildQuery()
-//
-//	// After (recommended):
-//	NewResolver[User]("user").
-//		WithArgRequired("id", graph.Int).
-//		WithResolver(func(p ResolveParams, args Args) (*User, error) {
-//			id := Get[int](args, "id")
-//			return userService.GetByID(id)
-//		}).BuildQuery()
-//
-// For struct inputs:
-//
-//	// Before (deprecated):
-//	NewArgsResolver[User, CreateUserInput]("createUser").
-//		WithResolver(func(ctx context.Context, p ResolveParams, input CreateUserInput) (*User, error) {
-//			return userService.Create(input.Name, input.Email)
-//		}).BuildMutation()
-//
-//	// After (recommended):
-//	NewResolver[User]("createUser").
-//		WithArg("input", CreateUserInput{}).
-//		WithResolver(func(p ResolveParams, args Args) (*User, error) {
-//			input := Get[CreateUserInput](args, "input")
-//			return userService.Create(input.Name, input.Email)
-//		}).BuildMutation()
-func NewArgsResolver[T any, A any](name string, argName ...string) *TypedArgsResolver[T, A] {
-	base := NewResolver[T](name)
-
-	// Get the type of A
-	var argsInstance A
-	argsType := reflect.TypeOf(argsInstance)
-
-	// Check if A is a struct or a primitive type
-	if argsType != nil && argsType.Kind() == reflect.Struct {
-		// Struct type - auto-generate args from struct fields
-		// Pass the parent type name for anonymous struct naming
-		parentTypeName := argsType.Name()
-		base.args = generateArgsFromTypeWithContext(argsType, parentTypeName)
-	} else {
-		// Primitive type (string, int, bool, etc.) - create single argument
-		fieldName := "input"
-		if len(argName) > 0 && argName[0] != "" {
-			fieldName = argName[0]
-		}
-
-		// Get the GraphQL type for the primitive
-		graphqlType := getPrimitiveGraphQLType(argsType)
-		if graphqlType != nil {
-			base.args = graphql.FieldConfigArgument{
-				fieldName: &graphql.ArgumentConfig{
-					Type: graphqlType,
-				},
-			}
-		}
-	}
-
-	return &TypedArgsResolver[T, A]{
-		base:     base,
-		argName:  argName,
-		argType:  argsType,
-		isScalar: argsType != nil && argsType.Kind() != reflect.Struct,
-	}
-}
-
 // getPrimitiveGraphQLType returns the GraphQL type for Go primitive types
 func getPrimitiveGraphQLType(t reflect.Type) graphql.Input {
 	if t == nil {
@@ -1409,84 +1304,6 @@ func getPrimitiveGraphQLType(t reflect.Type) graphql.Input {
 	default:
 		return nil
 	}
-}
-
-// WithResolver sets a type-safe resolver with typed arguments and context support
-//
-// Example usage:
-//
-//	type GetPostArgs struct {
-//		ID int `graphql:"id,required"`
-//	}
-//
-//	resolver.WithArgs[GetPostArgs]().
-//		WithResolver(func(ctx context.Context, args GetPostArgs) (*Post, error) {
-//			return postService.GetByID(args.ID)
-//		})
-func (r *TypedArgsResolver[T, A]) WithResolver(resolver func(ctx context.Context, p ResolveParams, args A) (*T, error)) *TypedArgsResolver[T, A] {
-	r.base.resolver = func(p graphql.ResolveParams) (interface{}, error) {
-		// Extract context from ResolveParams
-		ctx := p.Context
-		if ctx == nil {
-			ctx = context.Background()
-		}
-
-		var args A
-
-		// Check if A is a scalar type (primitive)
-		if r.isScalar {
-			// For primitives, extract the single argument value directly
-			fieldName := "input"
-			if len(r.argName) > 0 && r.argName[0] != "" {
-				fieldName = r.argName[0]
-			}
-
-			if argValue, exists := p.Args[fieldName]; exists {
-				// Convert to type A
-				argsValue := reflect.ValueOf(&args).Elem()
-				if err := setFieldValue(argsValue, argValue); err != nil {
-					return nil, fmt.Errorf("failed to parse argument %s: %w", fieldName, err)
-				}
-			}
-		} else {
-			// For structs, map all args to struct fields
-			if err := mapArgsToStruct(p.Args, &args); err != nil {
-				return nil, fmt.Errorf("failed to parse arguments: %w", err)
-			}
-		}
-
-		// Call the typed resolver
-		return resolver(ctx, ResolveParams(p), args)
-	}
-	return r
-}
-
-// BuildQuery builds and returns a QueryField
-func (r *TypedArgsResolver[T, A]) BuildQuery() QueryField {
-	return r.base.BuildQuery()
-}
-
-// BuildMutation builds and returns a MutationField
-func (r *TypedArgsResolver[T, A]) BuildMutation() MutationField {
-	return r.base.BuildMutation()
-}
-
-// AsList configures the resolver to return a list of items
-func (r *TypedArgsResolver[T, A]) AsList() *TypedArgsResolver[T, A] {
-	r.base.AsList()
-	return r
-}
-
-// AsPaginated configures the resolver to return paginated results
-func (r *TypedArgsResolver[T, A]) AsPaginated() *TypedArgsResolver[T, A] {
-	r.base.AsPaginated()
-	return r
-}
-
-// WithDescription sets the field description
-func (r *TypedArgsResolver[T, A]) WithDescription(desc string) *TypedArgsResolver[T, A] {
-	r.base.WithDescription(desc)
-	return r
 }
 
 // Typed Resolver Support - allows direct struct parameters instead of graphql.ResolveParams

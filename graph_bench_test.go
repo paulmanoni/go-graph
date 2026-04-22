@@ -3,9 +3,9 @@ package graph
 import (
 	"bytes"
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
 
@@ -444,13 +444,19 @@ func BenchmarkLoggingMiddleware(b *testing.B) {
 		},
 	})
 
-	b.ResetTimer()
-	// Redirect stdout to avoid benchmark noise
-	oldStdout := io.Discard
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		b.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+	oldStdout := os.Stdout
+	os.Stdout = devNull
+	defer func() { os.Stdout = oldStdout }()
+
 	b.SetBytes(1)
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = wrapped(params)
-		_ = oldStdout
 	}
 }
 
@@ -704,205 +710,6 @@ func BenchmarkNewHTTP_WithCustomRootObject(b *testing.B) {
 	}
 }
 
-// Benchmark NewArgsResolver with struct arguments
-func BenchmarkNewArgsResolver_StructArgs(b *testing.B) {
-	type GetUserArgs struct {
-		ID   int    `json:"id" graphql:"id,required"`
-		Name string `json:"name"`
-	}
-
-	type User struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resolver := NewArgsResolver[User, GetUserArgs]("user").
-			WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
-				return &User{ID: args.ID, Name: args.Name}, nil
-			})
-		_ = resolver.BuildQuery()
-	}
-}
-
-// Benchmark NewArgsResolver with primitive arguments
-func BenchmarkNewArgsResolver_PrimitiveArgs(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resolver := NewArgsResolver[string, string]("echo", "message").
-			WithResolver(func(ctx context.Context, p ResolveParams, args string) (*string, error) {
-				return &args, nil
-			})
-		_ = resolver.BuildMutation()
-	}
-}
-
-// Benchmark NewArgsResolver resolver execution with struct args
-func BenchmarkNewArgsResolver_ExecuteStructArgs(b *testing.B) {
-	type GetUserArgs struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-
-	type User struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-
-	resolver := NewArgsResolver[User, GetUserArgs]("user").
-		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
-			return &User{ID: args.ID, Name: args.Name}, nil
-		})
-
-	field := resolver.BuildQuery().Serve()
-	params := graphql.ResolveParams{
-		Args: map[string]interface{}{
-			"id":   1,
-			"name": "John",
-		},
-		Context: context.Background(),
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = field.Resolve(params)
-	}
-}
-
-// Benchmark NewArgsResolver resolver execution with primitive args
-func BenchmarkNewArgsResolver_ExecutePrimitiveArgs(b *testing.B) {
-	resolver := NewArgsResolver[string, string]("echo", "message").
-		WithResolver(func(ctx context.Context, p ResolveParams, args string) (*string, error) {
-			return &args, nil
-		})
-
-	field := resolver.BuildMutation().Serve()
-	params := graphql.ResolveParams{
-		Args: map[string]interface{}{
-			"message": "Hello World",
-		},
-		Context: context.Background(),
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = field.Resolve(params)
-	}
-}
-
-// Benchmark NewArgsResolver with nested struct arguments
-func BenchmarkNewArgsResolver_NestedStructArgs(b *testing.B) {
-	type MessageArgs struct {
-		Input struct {
-			Message string `json:"message"`
-			Name    string `json:"name"`
-		} `json:"input"`
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resolver := NewArgsResolver[string, MessageArgs]("sendMessage").
-			WithResolver(func(ctx context.Context, p ResolveParams, args MessageArgs) (*string, error) {
-				result := args.Input.Name + ": " + args.Input.Message
-				return &result, nil
-			})
-		_ = resolver.BuildMutation()
-	}
-}
-
-// Benchmark NewArgsResolver nested struct execution
-func BenchmarkNewArgsResolver_ExecuteNestedStructArgs(b *testing.B) {
-	type MessageArgs struct {
-		Input struct {
-			Message string `json:"message"`
-			Name    string `json:"name"`
-		} `json:"input"`
-	}
-
-	resolver := NewArgsResolver[string, MessageArgs]("sendMessage").
-		WithResolver(func(ctx context.Context, p ResolveParams, args MessageArgs) (*string, error) {
-			result := args.Input.Name + ": " + args.Input.Message
-			return &result, nil
-		})
-
-	field := resolver.BuildMutation().Serve()
-	params := graphql.ResolveParams{
-		Args: map[string]interface{}{
-			"input": map[string]interface{}{
-				"message": "Hello",
-				"name":    "John",
-			},
-		},
-		Context: context.Background(),
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = field.Resolve(params)
-	}
-}
-
-// Benchmark NewArgsResolver with context access
-func BenchmarkNewArgsResolver_WithContext(b *testing.B) {
-	type GetUserArgs struct {
-		ID int `json:"id"`
-	}
-
-	type User struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-
-	resolver := NewArgsResolver[User, GetUserArgs]("user").
-		WithResolver(func(ctx context.Context, p ResolveParams, args GetUserArgs) (*User, error) {
-			name := "Default"
-			if val := ctx.Value("test_key"); val != nil {
-				name = val.(string)
-			}
-			return &User{ID: args.ID, Name: name}, nil
-		})
-
-	field := resolver.BuildQuery().Serve()
-	ctx := context.WithValue(context.Background(), "test_key", "Context User")
-	params := graphql.ResolveParams{
-		Args: map[string]interface{}{
-			"id": 1,
-		},
-		Context: ctx,
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = field.Resolve(params)
-	}
-}
-
-// Benchmark NewArgsResolver as list
-func BenchmarkNewArgsResolver_AsList(b *testing.B) {
-	type User struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-
-	type ListUsersArgs struct {
-		Limit int `json:"limit"`
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resolver := NewArgsResolver[[]User, ListUsersArgs]("users").
-			AsList().
-			WithResolver(func(ctx context.Context, p ResolveParams, args ListUsersArgs) (*[]User, error) {
-				users := make([]User, args.Limit)
-				for j := 0; j < args.Limit; j++ {
-					users[j] = User{ID: j + 1, Name: "User"}
-				}
-				return &users, nil
-			})
-		_ = resolver.BuildQuery()
-	}
-}
 
 // Benchmark argument type generation from struct
 func BenchmarkGenerateArgsFromType(b *testing.B) {
